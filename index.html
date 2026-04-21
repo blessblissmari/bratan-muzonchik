@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b0b10" />
+  <title>БРАТАН-музончик 🎧</title>
+  <meta name="description" content="БРАТАН-музончик — бесплатный музыкальный плеер на базе YouTube/Piped с локальными плейлистами." />
+  <link rel="preconnect" href="https://www.youtube.com" />
+  <link rel="preconnect" href="https://i.ytimg.com" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎧%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-emoji">🎧</span>
+      <h1>БРАТАН<span class="accent">-музончик</span></h1>
+    </div>
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="Чё слушаем, бро? Забей трек, артиста, альбом..." autocomplete="off" />
+      <button id="searchBtn" type="button" aria-label="Искать">Искать</button>
+    </div>
+    <div class="instance-wrap" title="Бэкенд поиска (Piped). Переключись если не грузит.">
+      <label for="instance">API:</label>
+      <select id="instance"></select>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel results">
+      <div class="panel-head">
+        <h2>Результаты</h2>
+        <span id="statusLine" class="status"></span>
+      </div>
+      <ul id="results" class="list"></ul>
+    </section>
+
+    <section class="panel playlist">
+      <div class="panel-head">
+        <h2>Мой плейлист</h2>
+        <div class="playlist-actions">
+          <button id="shuffleBtn" type="button" title="Перемешать">🔀</button>
+          <button id="exportBtn" type="button" title="Экспорт в файл">⬇</button>
+          <button id="importBtn" type="button" title="Импорт из файла">⬆</button>
+          <button id="clearBtn" type="button" title="Очистить всё">🗑</button>
+          <input id="importFile" type="file" accept="application/json" hidden />
+        </div>
+      </div>
+      <ul id="playlist" class="list"></ul>
+      <p class="hint">Треки сохраняются у тебя в браузере (localStorage). Перетаскивай за ручку <span class="drag-sample">≡</span> чтобы менять порядок.</p>
+    </section>
+  </main>
+
+  <footer class="player" id="player">
+    <div class="now">
+      <img id="nowThumb" alt="" />
+      <div class="now-text">
+        <div id="nowTitle" class="now-title">Ничего не играет</div>
+        <div id="nowArtist" class="now-artist">Закинь что-нибудь в плейлист, бро</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="btns">
+        <button id="prevBtn" type="button" aria-label="Предыдущий">⏮</button>
+        <button id="playBtn" type="button" aria-label="Играть/Пауза" class="primary">▶</button>
+        <button id="nextBtn" type="button" aria-label="Следующий">⏭</button>
+        <button id="loopBtn" type="button" aria-label="Повтор" title="Повтор">🔁</button>
+      </div>
+      <div class="progress">
+        <span id="curTime">0:00</span>
+        <input id="seek" type="range" min="0" max="1000" value="0" step="1" />
+        <span id="durTime">0:00</span>
+      </div>
+    </div>
+
+    <div class="volume">
+      <span aria-hidden="true">🔊</span>
+      <input id="volume" type="range" min="0" max="100" value="80" />
+    </div>
+  </footer>
+
+  <div id="yt-host" aria-hidden="true"></div>
+
+  <template id="tpl-result">
+    <li class="row">
+      <img class="thumb" alt="" />
+      <div class="meta">
+        <div class="title"></div>
+        <div class="sub"></div>
+      </div>
+      <div class="row-actions">
+        <button class="play" title="Играть сейчас">▶</button>
+        <button class="add" title="В плейлист">＋</button>
+      </div>
+    </li>
+  </template>
+
+  <template id="tpl-plitem">
+    <li class="row pl-row" draggable="true">
+      <span class="handle" title="Перетащи чтобы переставить">≡</span>
+      <img class="thumb" alt="" />
+      <div class="meta">
+        <div class="title"></div>
+        <div class="sub"></div>
+      </div>
+      <div class="row-actions">
+        <button class="play" title="Играть">▶</button>
+        <button class="remove" title="Удалить">✕</button>
+      </div>
+    </li>
+  </template>
+
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
