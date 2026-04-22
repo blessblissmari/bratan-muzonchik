@@ -18,6 +18,8 @@
 // `X-Telegram-Bot-Api-Secret-Token` — так мы защищаемся от подделок.
 
 const LOGIN_TTL_SECONDS = 5 * 60;
+const SESSION_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 дней
+const PLAYLIST_MAX_BYTES = 256 * 1024; // 256 KiB — потолок на случай дурных запросов
 const SUB_FAR_FUTURE = 9999999999; // 2286 год
 const SUB_PERIOD_DAYS = 30;
 const SUB_PRICE_STARS = 99; // ≈ 99₽ на текущем курсе Telegram Stars.
@@ -49,6 +51,30 @@ function sanitizeUser(u) {
     last_name: u.last_name ? String(u.last_name) : null,
     photo_url: u.photo_url ? String(u.photo_url) : null,
   };
+}
+
+function randomToken(bytes = 24) {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function issueSession(env, tgId) {
+  if (!env.TIDAL_KV) return null;
+  const token = randomToken(24);
+  await env.TIDAL_KV.put(`session:${token}`, String(Number(tgId)), {
+    expirationTtl: SESSION_TTL_SECONDS,
+  });
+  return token;
+}
+
+async function resolveSession(env, token) {
+  if (!token || !/^[a-f0-9]{16,128}$/i.test(token)) return null;
+  if (!env.TIDAL_KV) return null;
+  const raw = await env.TIDAL_KV.get(`session:${token}`);
+  if (!raw) return null;
+  const tgId = Number(raw);
+  return Number.isFinite(tgId) && tgId > 0 ? tgId : null;
 }
 
 async function readSubscription(env, id) {
@@ -150,7 +176,40 @@ export async function handleTgLoginPoll(url, env) {
   // One-shot: удаляем, чтобы токен нельзя было переиспользовать.
   await env.TIDAL_KV.delete(`login:${token}`);
   const sub = await readSubscription(env, payload.id);
-  return json({ ok: true, user: sanitizeUser(payload), subscription: sub });
+  const session = await issueSession(env, payload.id);
+  return json({ ok: true, user: sanitizeUser(payload), subscription: sub, session });
+}
+
+// ---------- Playlist sync (stored as plain text JSON per TG id) ----------
+
+export async function handleTgPlaylist(url, request, env) {
+  if (!env.TIDAL_KV) return json({ ok: false, error: "kv not bound" }, 503);
+  const session = url.searchParams.get("session") || request.headers.get("x-tg-session") || "";
+  const tgId = await resolveSession(env, session);
+  if (!tgId) return json({ ok: false, error: "bad session" }, 401);
+
+  if (request.method === "GET") {
+    const text = (await env.TIDAL_KV.get(`playlist:${tgId}`)) || "";
+    return json({ ok: true, playlist: text });
+  }
+  if (request.method === "POST" || request.method === "PUT") {
+    const text = await request.text();
+    if (text.length > PLAYLIST_MAX_BYTES) {
+      return json({ ok: false, error: "too big" }, 413);
+    }
+    // Валидируем, что это JSON-массив; храним ровно тот текст, что прислали.
+    let arr;
+    try { arr = JSON.parse(text); }
+    catch { return json({ ok: false, error: "not json" }, 400); }
+    if (!Array.isArray(arr)) return json({ ok: false, error: "not array" }, 400);
+    if (arr.length === 0) {
+      await env.TIDAL_KV.delete(`playlist:${tgId}`);
+    } else {
+      await env.TIDAL_KV.put(`playlist:${tgId}`, text);
+    }
+    return json({ ok: true, count: arr.length });
+  }
+  return json({ ok: false, error: "method not allowed" }, 405);
 }
 
 // ---------- Webhook ----------
@@ -264,6 +323,27 @@ export async function handleTgBotWebhook(request, env) {
     return json({ ok: true });
   }
 
+  // /playlist — прислать юзеру его плейлист в виде текста.
+  if (/^\/playlist(@\w+)?(\s|$)/i.test(text)) {
+    const raw = (await env.TIDAL_KV?.get(`playlist:${from.id}`)) || "";
+    if (!raw) {
+      await tgSendMessage(env, chatId, "📭 Плейлист пустой. Добавь треки на сайте — синк идёт автоматически.");
+      return json({ ok: true });
+    }
+    let arr;
+    try { arr = JSON.parse(raw); } catch { arr = null; }
+    if (!Array.isArray(arr) || arr.length === 0) {
+      await tgSendMessage(env, chatId, "📭 Плейлист пустой.");
+      return json({ ok: true });
+    }
+    const lines = arr
+      .slice(0, 50)
+      .map((t, i) => `${i + 1}. ${String(t.title || "?").slice(0, 80)} — ${String(t.artist || t.user || "?").slice(0, 50)}`);
+    const tail = arr.length > 50 ? `\n… и ещё ${arr.length - 50}.` : "";
+    await tgSendMessage(env, chatId, `🎵 Твой плейлист (${arr.length}):\n${lines.join("\n")}${tail}`);
+    return json({ ok: true });
+  }
+
   // /help
   if (/^\/help(@\w+)?(\s|$)/i.test(text)) {
     await tgSendMessage(
@@ -273,6 +353,7 @@ export async function handleTgBotWebhook(request, env) {
         "Команды:",
         "• /pay — оплатить подписку (99 ⭐ / 30 дней)",
         "• /status — состояние подписки",
+        "• /playlist — показать свой плейлист с сайта",
         "• /start — приветствие",
       ].join("\n"),
     );

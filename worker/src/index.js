@@ -13,6 +13,7 @@ import {
   handleTgBotWebhook,
   handleTgStatus,
   handleTgSubscribe,
+  handleTgPlaylist,
 } from "./tg.js";
 //
 // Endpoints:
@@ -398,6 +399,8 @@ export default {
         resp = await handleTgStatus(url, env);
       } else if (url.pathname === "/tg/subscribe") {
         resp = await handleTgSubscribe(url, request, env);
+      } else if (url.pathname === "/tg/playlist") {
+        resp = await handleTgPlaylist(url, request, env);
       } else {
         resp = json({ error: "not found" }, 404);
       }
