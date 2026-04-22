@@ -447,9 +447,7 @@
         };
         hls.on(Hls.Events.ERROR, (_e, data) => {
           if (data && data.fatal) {
-            const msg = 'HLS fatal: ' + (data.details || data.type || '');
-            done(new Error(msg));
-            onStreamError(msg);
+            done(new Error('HLS fatal: ' + (data.details || data.type || '')));
           }
         });
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
