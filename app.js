@@ -1,33 +1,25 @@
 // БРАТАН-музончик — бесплатный музыкальный плеер на базе SoundCloud.
-// Выбор источника: SoundCloud, потому что:
-//   1) CORS открыт со всех доменов — статический сайт на GitHub Pages достучится напрямую,
-//      без прокси, без бэкенда, без VPS.
-//   2) У большинства крупных артистов есть официальные верифицированные аккаунты
-//      (Weeknd, Drake, Dua Lipa, Billie Eilish, Daft Punk, Taylor Swift и т.д.),
-//      плюс `publisher_metadata` с лейблом/ISRC у лейбловых релизов.
-//   3) Стрим — plain HLS MP3 128 kbps (без DRM), играется через hls.js в любом браузере.
-// Альтернативные варианты (YouTube/Piped/Invidious) мы проверили — они все уперлись
-// в бот-блок YouTube или отсутствие CORS у публичных инстансов.
+// Фронтенд статический (GitHub Pages), бэкенд — Cloudflare Worker-прокси
+// (https://github.com/blessblissmari/bratan-muzonchik/tree/main/worker),
+// нужен потому что api-v2.soundcloud.com не отдаёт CORS. Воркер также
+// автоматически подтягивает свежий client_id из soundcloud.com JS и кеширует
+// его на час, так что фронту о нём знать не надо.
 //
 // Официал-фильтр: берём только tracks с verified-артиста ИЛИ с заполненным
 // `publisher_metadata.artist` (т.е. это релиз через лейбл), плюс режем по словарю
 // cover/karaoke/sped up/slowed/nightcore/mashup/fan edit/lyric video/etc.
+// Стрим — plain HLS MP3 128 kbps (без DRM), играется через hls.js в любом браузере.
 
 (() => {
   'use strict';
 
-  // SoundCloud public web client_id (скрэпится с главной страницы soundcloud.com).
-  // Иногда ротируется — если выдача внезапно отдаёт 401, значит нужно обновить.
-  // Запасные id можно добавить в массив ниже — при 401 на первом идём по очереди.
-  const SC_CLIENT_IDS = [
-    'fAhkTpQg5TX1uwXLQ7FyuPFH81D360jK',
-  ];
-  const SC_API = 'https://api-v2.soundcloud.com';
+  // Cloudflare Worker (прокси SoundCloud + CORS). Если фронт раскатан на другом
+  // инстансе, подмени этот URL на свой.
+  const API_BASE = 'https://bratan-muzonchik.bratan-muzonchik.workers.dev';
 
   const LS_KEY_PLAYLIST = 'bratan:playlist:v2';
   const LS_KEY_VOLUME = 'bratan:volume:v1';
   const LS_KEY_LOOP = 'bratan:loop:v1';
-  const LS_KEY_CLIENT_ID = 'bratan:sc_client_id:v1';
 
   // ---------- DOM ----------
   const $ = (sel) => document.querySelector(sel);
@@ -59,7 +51,6 @@
 
   // ---------- State ----------
   const state = {
-    clientId: localStorage.getItem(LS_KEY_CLIENT_ID) || SC_CLIENT_IDS[0],
     results: [],
     playlist: loadPlaylist(),
     currentId: null,         // SoundCloud track id (number) of currently-loaded track
@@ -178,25 +169,11 @@
 
   // ---------- Search ----------
   async function searchSoundCloud(query) {
-    const clientIds = [state.clientId, ...SC_CLIENT_IDS.filter((c) => c !== state.clientId)];
-    let lastErr = null;
-    for (const cid of clientIds) {
-      try {
-        const url = `${SC_API}/search/tracks?q=${encodeURIComponent(query)}&client_id=${encodeURIComponent(cid)}&limit=40`;
-        const res = await fetchWithTimeout(url, 10000);
-        if (res.status === 401 || res.status === 403) throw new Error('client_id устарел');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        if (cid !== state.clientId) {
-          state.clientId = cid;
-          localStorage.setItem(LS_KEY_CLIENT_ID, cid);
-        }
-        return Array.isArray(data.collection) ? data.collection : [];
-      } catch (e) {
-        lastErr = e;
-      }
-    }
-    throw lastErr || new Error('SoundCloud недоступен');
+    const url = `${API_BASE}/search?q=${encodeURIComponent(query)}&limit=40`;
+    const res = await fetchWithTimeout(url, 15000);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    return Array.isArray(data.collection) ? data.collection : [];
   }
 
   async function runSearch() {
@@ -443,11 +420,12 @@
     }
   }
 
-  // Resolve SoundCloud HLS playlist URL from a transcoding endpoint, then hand it
-  // to hls.js (or native <audio> on Safari).
+  // Resolve SoundCloud HLS playlist URL through the Worker (the Worker re-signs
+  // it with a fresh client_id and returns a wrapped /hls?url=... link so the
+  // m3u8 segments also go through the CORS-enabled proxy).
   async function resolveSCStream(transcodingUrl) {
-    const url = transcodingUrl + (transcodingUrl.includes('?') ? '&' : '?') + 'client_id=' + encodeURIComponent(state.clientId);
-    const res = await fetchWithTimeout(url, 10000);
+    const url = `${API_BASE}/resolve?url=${encodeURIComponent(transcodingUrl)}`;
+    const res = await fetchWithTimeout(url, 15000);
     if (!res.ok) throw new Error('stream resolve HTTP ' + res.status);
     const data = await res.json();
     if (!data || !data.url) throw new Error('нет m3u8 url');
@@ -527,10 +505,16 @@
   }
 
   async function refetchTrack(id) {
-    const url = `${SC_API}/tracks/${encodeURIComponent(id)}?client_id=${encodeURIComponent(state.clientId)}`;
-    const res = await fetchWithTimeout(url, 10000);
+    // Worker currently exposes only /search + /resolve + /hls. For a legacy
+    // playlist item that was stored without a `transcoding` URL, fallback to
+    // searching by id via /search (SoundCloud returns track-id lookups there).
+    const res = await fetchWithTimeout(`${API_BASE}/search?q=${encodeURIComponent(String(id))}&limit=1`, 10000);
     if (!res.ok) throw new Error('track refetch HTTP ' + res.status);
-    return res.json();
+    const data = await res.json();
+    const arr = Array.isArray(data.collection) ? data.collection : [];
+    const hit = arr.find((t) => t.id === id) || arr[0];
+    if (!hit) throw new Error('track not found');
+    return hit;
   }
 
   function currentList() {

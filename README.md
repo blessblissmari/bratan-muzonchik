@@ -5,9 +5,13 @@
 
 ## Что под капотом
 
-- **Источник музыки** — публичный SoundCloud API v2 (`api-v2.soundcloud.com`).
-  Никаких ключей, никакого логина — `client_id` скрэпится c главной страницы
-  `soundcloud.com` (встроен в сборку).
+- **Источник музыки** — публичный SoundCloud API v2 через Cloudflare
+  Worker-прокси ([worker/](worker/)). Воркер нужен потому что
+  `api-v2.soundcloud.com` не отдаёт CORS, а заодно он автоматически
+  подтягивает свежий `client_id` из JS-бандлов `soundcloud.com` и кеширует
+  его на час — фронту о ключах знать не надо.
+- **Бэкенд** — Cloudflare Workers free tier (100k запросов/день, в обрез
+  для домашнего плеера). Код воркера: [worker/src/index.js](worker/src/index.js).
 - **Плеер** — нативный `<audio>` + [hls.js](https://github.com/video-dev/hls.js)
   для HLS-стримов. Формат: plain-HLS MP3 128 kbps (без DRM). На Safari/iOS HLS
   играется нативно, hls.js не грузится.
@@ -19,7 +23,7 @@
   Рядом с верифицированными артистами — галочка ✓.
 - **Плейлист** — сохраняется в `localStorage` твоего браузера. Можно
   экспортировать в JSON и импортировать назад.
-- **Фронт** — ванильный HTML/CSS/JS без сборки, без своего бэкенда.
+- **Фронт** — ванильный HTML/CSS/JS без сборки, деплой на GitHub Pages.
 
 ## Фичи
 
@@ -46,9 +50,8 @@ Workflow: [.github/workflows/pages.yml](.github/workflows/pages.yml).
 
 ## Оговорки
 
-- SoundCloud `client_id` периодически ротируется (раз в несколько месяцев). Если поиск
-  вдруг начнёт отдавать 401 — нужно выдернуть новый id из JS-бандла на https://soundcloud.com
-  и добавить в массив `SC_CLIENT_IDS` в [app.js](app.js).
+- SoundCloud `client_id` периодически ротируется, но воркер сам подтягивает
+  свежий — делать ничего не надо.
 - Качество — 128 kbps MP3 (единственный вариант без DRM у SoundCloud публично).
   160 kbps AAC у SoundCloud идёт с FairPlay-шифрованием (`cbc-encrypted-hls`),
   который в браузере проиграть нельзя.
