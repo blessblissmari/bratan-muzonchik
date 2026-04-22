@@ -70,6 +70,7 @@
   const PAYWALL_TG_URL = `https://t.me/${TG_BOT_USERNAME}?start=pay`;
   const PAYWALL_PRICE_LABEL = 'Оплатить 99 ₽/мес';
   const LS_KEY_TG_USER = 'bratan:tg_user:v1';
+  const LS_KEY_TG_SESSION = 'bratan:tg_session:v1';
   const LS_KEY_PLAYS = 'bratan:plays:v1';
   const FREE_DAILY_LIMIT = 3;
   // Админы — безлимитный доступ. Должен совпадать со списком в worker/src/tg.js.
@@ -111,7 +112,10 @@
     const pct = max > min ? ((val - min) / (max - min)) * 100 : 0;
     input.style.setProperty('--pct', pct + '%');
   }
-  function savePlaylist() { localStorage.setItem(LS_KEY_PLAYLIST, JSON.stringify(state.playlist)); }
+  function savePlaylist() {
+    localStorage.setItem(LS_KEY_PLAYLIST, JSON.stringify(state.playlist));
+    scheduleServerPlaylistPush();
+  }
   function loadPlaylist() {
     try {
       const raw = localStorage.getItem(LS_KEY_PLAYLIST);
@@ -1116,6 +1120,74 @@
     if (u) localStorage.setItem(LS_KEY_TG_USER, JSON.stringify(u));
     else localStorage.removeItem(LS_KEY_TG_USER);
   }
+  function loadTgSession() {
+    try { return localStorage.getItem(LS_KEY_TG_SESSION) || null; } catch { return null; }
+  }
+  function saveTgSession(s) {
+    if (s) localStorage.setItem(LS_KEY_TG_SESSION, s);
+    else localStorage.removeItem(LS_KEY_TG_SESSION);
+  }
+
+  // ---------- Server playlist sync (stored as text in TG bot KV by TG id) ----------
+  let serverPushTimer = null;
+  let lastPushedPlaylistJson = null;
+
+  function scheduleServerPlaylistPush() {
+    const session = loadTgSession();
+    if (!session) return;
+    if (serverPushTimer) clearTimeout(serverPushTimer);
+    serverPushTimer = setTimeout(pushServerPlaylist, 1500);
+  }
+
+  async function pushServerPlaylist() {
+    const session = loadTgSession();
+    if (!session) return;
+    const body = JSON.stringify(state.playlist || []);
+    if (body === lastPushedPlaylistJson) return;
+    try {
+      const r = await fetch(`${API_BASE}/tg/playlist?session=${encodeURIComponent(session)}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      if (r.ok) lastPushedPlaylistJson = body;
+      else if (r.status === 401) saveTgSession(null);
+    } catch { /* transient */ }
+  }
+
+  async function pullServerPlaylist() {
+    const session = loadTgSession();
+    if (!session) return;
+    try {
+      const r = await fetch(`${API_BASE}/tg/playlist?session=${encodeURIComponent(session)}`);
+      if (!r.ok) { if (r.status === 401) saveTgSession(null); return; }
+      const data = await r.json().catch(() => null);
+      if (!data || !data.ok) return;
+      const text = String(data.playlist || '');
+      if (!text) { lastPushedPlaylistJson = JSON.stringify(state.playlist || []); return; }
+      let remote;
+      try { remote = JSON.parse(text); } catch { return; }
+      if (!Array.isArray(remote)) return;
+      // Мерджим: всё что есть у сервера + недостающее локальное (сохраняем порядок сервера).
+      const seen = new Set();
+      const merged = [];
+      for (const it of remote) {
+        if (!it || !it.source || !it.id) continue;
+        const k = itemKey(it);
+        if (!seen.has(k)) { seen.add(k); merged.push(it); }
+      }
+      for (const it of (state.playlist || [])) {
+        const k = itemKey(it);
+        if (!seen.has(k)) { seen.add(k); merged.push(it); }
+      }
+      state.playlist = merged;
+      localStorage.setItem(LS_KEY_PLAYLIST, JSON.stringify(merged));
+      renderPlaylist();
+      lastPushedPlaylistJson = JSON.stringify(merged);
+      // Если локально было что-то, чего нет на сервере — запушим мердж обратно.
+      if (merged.length !== remote.length) scheduleServerPlaylistPush();
+    } catch { /* noop */ }
+  }
 
   function renderAuthUi() {
     const user = loadTgUser();
@@ -1165,9 +1237,11 @@
       const data = await r.json().catch(() => ({}));
       if (data && data.ok && data.user) {
         saveTgUser({ ...data.user, subscription: data.subscription || null });
+        if (data.session) saveTgSession(data.session);
         renderAuthUi();
         hidePaywall();
         setStatus('Вошёл как @' + (data.user.username || data.user.first_name || data.user.id));
+        pullServerPlaylist();
         return true;
       }
     } catch { /* transient — продолжим пуллить */ }
@@ -1227,9 +1301,13 @@
       els.tgLogoutBtn.addEventListener('click', () => {
         stopTgPoll();
         saveTgUser(null);
+        saveTgSession(null);
+        lastPushedPlaylistJson = null;
         renderAuthUi();
       });
     }
+    // При возвращении на сайт с активной сессией — подтянуть серверный плейлист.
+    if (loadTgSession()) pullServerPlaylist();
     window.addEventListener('beforeunload', stopTgPoll);
   }
 
