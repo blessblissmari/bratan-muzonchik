@@ -8,6 +8,7 @@ import {
   handleTidalAudio,
   handleTidalDownload,
 } from "./tidal.js";
+import { handleTgVerify, handleTgStatus, handleTgWebhook } from "./tg.js";
 //
 // Endpoints:
 //   GET  /search?q=<query>&limit=<n>       -> SoundCloud /search/tracks JSON
@@ -356,7 +357,7 @@ async function handleYtAudio(url, req) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...CORS_HEADERS, "access-control-allow-methods": "GET, POST, OPTIONS" } });
 
     try {
       let resp;
@@ -384,6 +385,12 @@ export default {
         resp = await handleTidalAudio(url, request);
       } else if (url.pathname === "/tidal/download") {
         resp = await handleTidalDownload(url, request, env, ctx);
+      } else if (url.pathname === "/tg/verify") {
+        resp = await handleTgVerify(request, env);
+      } else if (url.pathname === "/tg/status") {
+        resp = await handleTgStatus(url, env);
+      } else if (url.pathname === "/tg/webhook") {
+        resp = await handleTgWebhook(url, request, env);
       } else {
         resp = json({ error: "not found" }, 404);
       }

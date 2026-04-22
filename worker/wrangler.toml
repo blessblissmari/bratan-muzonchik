@@ -4,3 +4,7 @@ compatibility_date = "2024-11-01"
 
 [observability]
 enabled = true
+
+[[kv_namespaces]]
+binding = "TIDAL_KV"
+id = "382c18f78bae4de587a69fbb34b9deae"

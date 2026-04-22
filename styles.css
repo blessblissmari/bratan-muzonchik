@@ -66,7 +66,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255,61,11
   top: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr auto auto;
   gap: 14px;
   align-items: center;
   padding: 14px 18px;
@@ -74,6 +74,81 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255,61,11
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
 }
+.header-actions { display: flex; align-items: center; gap: 8px; }
+.pay-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: inherit; font-weight: 800; font-size: 13px; line-height: 1;
+  text-decoration: none; white-space: nowrap;
+  padding: 10px 14px; border-radius: 999px;
+  color: #1a0a1a;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border: 1px solid transparent;
+  box-shadow: 0 4px 18px rgba(255, 61, 110, .35);
+  transition: transform .08s ease, box-shadow .15s ease, filter .15s ease;
+}
+.pay-btn::before { content: '★'; font-size: 12px; }
+.pay-btn:hover { filter: brightness(1.05); box-shadow: 0 6px 22px rgba(255, 61, 110, .5); }
+.pay-btn:active { transform: translateY(1px); }
+.install-btn {
+  font-size: 12px; padding: 8px 12px; border-radius: 999px;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.install-btn[hidden] { display: none; }
+.tg-slot { display: inline-flex; align-items: center; min-height: 32px; }
+.tg-slot:empty::before {
+  content: 'Войти через Telegram';
+  font-size: 12px; color: var(--muted);
+  padding: 6px 10px; border: 1px dashed var(--border); border-radius: 999px;
+}
+.tg-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 4px 6px 4px 4px; border-radius: 999px;
+  background: var(--panel); border: 1px solid var(--border);
+  font-size: 12px; color: var(--text); white-space: nowrap;
+}
+.tg-pill[hidden] { display: none; }
+.tg-pill img { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; background: var(--panel-2); }
+.tg-pill img:not([src]), .tg-pill img[src=""] { visibility: hidden; }
+.tg-pill button {
+  width: 20px; height: 20px; padding: 0; line-height: 1;
+  border-radius: 50%; background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--muted); font-size: 11px;
+}
+.tg-pill button:hover { color: var(--text); background: #2a2a3d; }
+
+/* paywall modal */
+.modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
+.modal[hidden] { display: none; }
+.modal-backdrop { position: absolute; inset: 0; background: rgba(5,5,10,.75); backdrop-filter: blur(6px); }
+.modal-card {
+  position: relative; width: min(420px, calc(100% - 32px));
+  background: linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--panel);
+  border: 1px solid var(--border); border-radius: 20px;
+  padding: 24px 22px 22px; box-shadow: var(--shadow);
+  text-align: center;
+}
+.modal-close {
+  position: absolute; top: 10px; right: 10px; width: 28px; height: 28px; padding: 0;
+  border-radius: 50%; background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--muted); font-size: 13px;
+}
+.modal-close:hover { color: var(--text); }
+.modal-emoji { font-size: 40px; margin-bottom: 6px; filter: drop-shadow(0 0 12px rgba(255,61,110,.35)); }
+.modal-card h3 { margin: 4px 0 8px; font-size: 18px; }
+.modal-sub { margin: 0 0 14px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+.modal-sub strong { color: var(--text); }
+.modal-bullets {
+  list-style: none; padding: 0; margin: 0 0 18px; text-align: left;
+  display: grid; gap: 8px; font-size: 14px;
+}
+.modal-bullets li {
+  padding: 8px 12px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--border);
+}
+.modal-bullets li::before { content: '✓ '; color: var(--good); font-weight: 700; }
+.pay-btn--lg { display: inline-flex; width: 100%; justify-content: center; padding: 14px 18px; font-size: 15px; }
+.modal-hint { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-emoji { font-size: 26px; filter: drop-shadow(0 0 8px rgba(255,61,110,.6)); }
 .brand h1 {
@@ -116,6 +191,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255,61,11
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
   .topbar { grid-template-columns: 1fr; }
+  .header-actions { justify-content: flex-end; }
 }
 
 .panel {

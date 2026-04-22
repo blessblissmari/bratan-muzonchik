@@ -49,7 +49,29 @@
     importFile: $('#importFile'),
     sourceSel: $('#sourceSel'),
     ytWrap: $('#ytEmbedWrap'),
+    payBtn: $('#payBtn'),
+    installBtn: $('#installBtn'),
+    tgWidgetSlot: $('#tgWidgetSlot'),
+    tgUserPill: $('#tgUserPill'),
+    tgUserPhoto: $('#tgUserPhoto'),
+    tgUserName: $('#tgUserName'),
+    tgLogoutBtn: $('#tgLogoutBtn'),
+    paywallModal: $('#paywallModal'),
+    paywallCta: $('#paywallCta'),
   };
+
+  // Paywall + Telegram login.
+  // 1) Замени TG_BOT_USERNAME на username реального бота (без @).
+  //    В @BotFather: /setdomain -> blessblissmari.github.io (обязательно).
+  // 2) PAYWALL_TG_URL должен указывать на того же бота (start-param — deep link).
+  // 3) На воркере надо выставить секреты: TG_BOT_TOKEN (обязателен для /tg/verify),
+  //    TG_WEBHOOK_SECRET (опционально, для /tg/webhook из бота).
+  const TG_BOT_USERNAME = 'bratan_muzonchik_bot';
+  const PAYWALL_TG_URL = `https://t.me/${TG_BOT_USERNAME}?start=pay`;
+  const PAYWALL_PRICE_LABEL = 'Оплатить 99 ₽/мес';
+  const LS_KEY_TG_USER = 'bratan:tg_user:v1';
+  const LS_KEY_PLAYS = 'bratan:plays:v1';
+  const FREE_DAILY_LIMIT = 3;
 
   // ---------- State ----------
   const state = {
@@ -791,8 +813,92 @@
     });
   }
 
+  // ---------- Paywall / daily free limit ----------
+  function todayKey() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function readPlays() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_KEY_PLAYS) || 'null');
+      if (raw && raw.date === todayKey() && Array.isArray(raw.ids)) return raw;
+    } catch { /* noop */ }
+    return { date: todayKey(), ids: [] };
+  }
+
+  function writePlays(plays) {
+    try { localStorage.setItem(LS_KEY_PLAYS, JSON.stringify(plays)); } catch { /* noop */ }
+  }
+
+  function isSubscribed() {
+    const user = loadTgUser();
+    if (!user) return false;
+    const sub = user.subscription;
+    if (!sub) return false;
+    if (sub.subscribed === true) return true;
+    if (sub.until && Number(sub.until) > Math.floor(Date.now() / 1000)) return true;
+    return false;
+  }
+
+  function freePlaysLeft() {
+    const plays = readPlays();
+    return Math.max(0, FREE_DAILY_LIMIT - plays.ids.length);
+  }
+
+  function canPlay(item) {
+    if (isSubscribed()) return true;
+    const plays = readPlays();
+    const key = itemKey(item);
+    if (plays.ids.includes(key)) return true; // don't double-count replays of same track
+    return plays.ids.length < FREE_DAILY_LIMIT;
+  }
+
+  function recordPlay(item) {
+    if (isSubscribed()) return;
+    const plays = readPlays();
+    const key = itemKey(item);
+    if (!plays.ids.includes(key)) {
+      plays.ids.push(key);
+      writePlays(plays);
+    }
+  }
+
+  function showPaywall() {
+    if (!els.paywallModal) return;
+    if (els.paywallCta) els.paywallCta.href = els.payBtn ? els.payBtn.href : PAYWALL_TG_URL;
+    els.paywallModal.hidden = false;
+    els.paywallModal.setAttribute('aria-hidden', 'false');
+  }
+
+  function hidePaywall() {
+    if (!els.paywallModal) return;
+    els.paywallModal.hidden = true;
+    els.paywallModal.setAttribute('aria-hidden', 'true');
+  }
+
+  function setupPaywallModal() {
+    if (!els.paywallModal) return;
+    els.paywallModal.addEventListener('click', (e) => {
+      const t = e.target;
+      if (t && (t.hasAttribute('data-close') || t.closest('[data-close]'))) hidePaywall();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !els.paywallModal.hidden) hidePaywall();
+    });
+  }
+
   // ---------- Unified play / navigation ----------
   async function playItem(item, listHint) {
+    if (!canPlay(item)) {
+      setStatus(`Лимит: ${FREE_DAILY_LIMIT} трека в день на бесплатном тарифе`);
+      showPaywall();
+      return;
+    }
+    recordPlay(item);
     state.currentId = item.id;
     state.currentItem = item;
     state.currentList = listHint;
@@ -996,6 +1102,151 @@
     });
   }
 
+  // ---------- Telegram login ----------
+  function loadTgUser() {
+    try { return JSON.parse(localStorage.getItem(LS_KEY_TG_USER) || 'null'); }
+    catch { return null; }
+  }
+  function saveTgUser(u) {
+    if (u) localStorage.setItem(LS_KEY_TG_USER, JSON.stringify(u));
+    else localStorage.removeItem(LS_KEY_TG_USER);
+  }
+
+  function renderAuthUi() {
+    const user = loadTgUser();
+    if (user) {
+      if (els.tgWidgetSlot) els.tgWidgetSlot.hidden = true;
+      if (els.tgUserPill) els.tgUserPill.hidden = false;
+      if (els.tgUserName) els.tgUserName.textContent = user.username ? '@' + user.username : (user.first_name || 'you');
+      if (els.tgUserPhoto) {
+        if (user.photo_url) els.tgUserPhoto.src = user.photo_url;
+        else els.tgUserPhoto.removeAttribute('src');
+      }
+      if (els.payBtn) {
+        const url = new URL(PAYWALL_TG_URL);
+        url.searchParams.set('start', 'pay_' + user.id);
+        els.payBtn.href = url.toString();
+      }
+    } else {
+      if (els.tgWidgetSlot) els.tgWidgetSlot.hidden = false;
+      if (els.tgUserPill) els.tgUserPill.hidden = true;
+      if (els.payBtn) els.payBtn.href = PAYWALL_TG_URL;
+    }
+  }
+
+  function injectTelegramWidget() {
+    const slot = els.tgWidgetSlot;
+    if (!slot || slot.dataset.injected) return;
+    if (!TG_BOT_USERNAME) return;
+    slot.dataset.injected = '1';
+    const s = document.createElement('script');
+    s.async = true;
+    s.src = 'https://telegram.org/js/telegram-widget.js?22';
+    s.setAttribute('data-telegram-login', TG_BOT_USERNAME);
+    s.setAttribute('data-size', 'medium');
+    s.setAttribute('data-radius', '20');
+    s.setAttribute('data-onauth', 'onTelegramAuth(user)');
+    s.setAttribute('data-request-access', 'write');
+    slot.appendChild(s);
+  }
+
+  window.onTelegramAuth = async function onTelegramAuth(user) {
+    try {
+      const r = await fetch(`${API_BASE}/tg/verify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(user),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      saveTgUser({ ...data.user, subscription: data.subscription || null });
+      renderAuthUi();
+      hidePaywall();
+    } catch (e) {
+      // Fallback: fail closed but also keep the raw user so UI shows something useful.
+      // Hash verification is the security boundary — no verify, no access to gated features.
+      console.warn('[tg] verify failed:', e);
+      setStatus('Не вышло подтвердить Telegram-логин: ' + (e && e.message ? e.message : e));
+    }
+  };
+
+  async function refreshSubscription() {
+    const user = loadTgUser();
+    if (!user || !user.id) return;
+    try {
+      const r = await fetch(`${API_BASE}/tg/status?id=${encodeURIComponent(user.id)}`);
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data && data.ok) {
+        saveTgUser({ ...user, subscription: data.subscription || null });
+        renderAuthUi();
+      }
+    } catch { /* noop */ }
+  }
+
+  function setupAuth() {
+    renderAuthUi();
+    if (!loadTgUser()) injectTelegramWidget();
+    else refreshSubscription();
+    if (els.tgLogoutBtn) {
+      els.tgLogoutBtn.addEventListener('click', () => {
+        saveTgUser(null);
+        renderAuthUi();
+        // Re-inject widget so user can log back in without reload.
+        if (els.tgWidgetSlot) {
+          els.tgWidgetSlot.innerHTML = '';
+          delete els.tgWidgetSlot.dataset.injected;
+        }
+        injectTelegramWidget();
+      });
+    }
+  }
+
+  // ---------- PWA ----------
+  function setupPwa() {
+    if (els.payBtn) {
+      els.payBtn.href = PAYWALL_TG_URL;
+      els.payBtn.textContent = PAYWALL_PRICE_LABEL;
+    }
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(() => { /* offline shell optional */ });
+      });
+    }
+
+    let deferredPrompt = null;
+    const installBtn = els.installBtn;
+    const isStandalone = () =>
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true;
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      if (installBtn && !isStandalone()) installBtn.hidden = false;
+    });
+
+    if (installBtn) {
+      installBtn.addEventListener('click', async () => {
+        if (!deferredPrompt) return;
+        installBtn.disabled = true;
+        try {
+          deferredPrompt.prompt();
+          await deferredPrompt.userChoice;
+        } catch { /* no-op */ }
+        deferredPrompt = null;
+        installBtn.hidden = true;
+        installBtn.disabled = false;
+      });
+    }
+
+    window.addEventListener('appinstalled', () => {
+      if (installBtn) installBtn.hidden = true;
+      deferredPrompt = null;
+    });
+  }
+
   // ---------- Boot ----------
   initAudio();
   applySourceToUi();
@@ -1003,4 +1254,7 @@
   renderPlaylist();
   setStatus('');
   updateLoopBtn();
+  setupPwa();
+  setupAuth();
+  setupPaywallModal();
 })();
