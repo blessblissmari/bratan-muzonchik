@@ -1,14 +1,21 @@
-// Telegram Login Widget verification + simple subscription status.
+// Telegram auth (deep-link, без номера телефона) + подписки.
 //
-// Flow:
-//   Frontend opens official Telegram Login Widget configured with our bot
-//   username. On success TG returns a signed payload. We verify the HMAC in the
-//   worker (bot_token is a CF secret, never shipped to the browser), then
-//   answer with a sanitized user object the frontend can persist.
+// Поток логина:
+//   1. Фронт генерит случайный login_token и открывает t.me/<bot>?start=login_<token>.
+//   2. Юзер жмёт Start в TG — бот получает update через webhook /tg/bot-webhook.
+//   3. Воркер парсит message.text == "/start login_<token>", берёт from.id/username
+//      и сохраняет в KV (`login:<token>` -> user) с TTL 5 мин.
+//   4. Фронт пуллит /tg/login/poll?token=<token> раз в 2 сек → получает user.
 //
-// Spec: https://core.telegram.org/widgets/login#checking-authorization
+// Секрет для webhook: TG_WEBHOOK_SECRET (CF secret). Передаётся в setWebhook как
+// `secret_token`, Telegram шлёт его обратно в заголовке
+// `X-Telegram-Bot-Api-Secret-Token` — так мы защищаемся от подделок.
 
-const TG_AUTH_MAX_AGE_SECONDS = 24 * 60 * 60; // 24h per TG recommendation
+const LOGIN_TTL_SECONDS = 5 * 60;
+const SUB_FAR_FUTURE = 9999999999; // 2286 год
+
+// Админы — безлимитный доступ, модалка 3/день не срабатывает.
+const ADMIN_IDS = new Set([898846950, 422896004]);
 
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",
@@ -24,40 +31,6 @@ function json(data, status = 200) {
   });
 }
 
-function hex(buf) {
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function verifyTgHash(payload, botToken) {
-  const { hash, ...rest } = payload;
-  if (!hash || typeof hash !== "string") return { ok: false, reason: "missing hash" };
-  const keys = Object.keys(rest).sort();
-  const dataCheckString = keys.map((k) => `${k}=${rest[k]}`).join("\n");
-
-  const enc = new TextEncoder();
-  const secretKey = await crypto.subtle.digest("SHA-256", enc.encode(botToken));
-  const key = await crypto.subtle.importKey(
-    "raw",
-    secretKey,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const mac = await crypto.subtle.sign("HMAC", key, enc.encode(dataCheckString));
-  const computed = hex(mac);
-
-  if (computed.length !== hash.length) return { ok: false, reason: "bad hash" };
-  let diff = 0;
-  for (let i = 0; i < computed.length; i++) diff |= computed.charCodeAt(i) ^ hash.charCodeAt(i);
-  if (diff !== 0) return { ok: false, reason: "bad hash" };
-
-  const authDate = Number(rest.auth_date || 0);
-  if (!authDate || Math.floor(Date.now() / 1000) - authDate > TG_AUTH_MAX_AGE_SECONDS) {
-    return { ok: false, reason: "auth_date expired" };
-  }
-  return { ok: true };
-}
-
 function sanitizeUser(u) {
   return {
     id: Number(u.id),
@@ -65,14 +38,15 @@ function sanitizeUser(u) {
     first_name: u.first_name ? String(u.first_name) : null,
     last_name: u.last_name ? String(u.last_name) : null,
     photo_url: u.photo_url ? String(u.photo_url) : null,
-    auth_date: Number(u.auth_date),
   };
 }
 
 async function readSubscription(env, id) {
+  const nId = Number(id);
+  if (ADMIN_IDS.has(nId)) return { subscribed: true, until: SUB_FAR_FUTURE, admin: true };
   if (!env.TIDAL_KV) return { subscribed: false, until: 0 };
   try {
-    const raw = await env.TIDAL_KV.get(`sub:${id}`);
+    const raw = await env.TIDAL_KV.get(`sub:${nId}`);
     if (!raw) return { subscribed: false, until: 0 };
     const parsed = JSON.parse(raw);
     const until = Number(parsed.until || 0);
@@ -82,24 +56,93 @@ async function readSubscription(env, id) {
   }
 }
 
-export async function handleTgVerify(request, env) {
-  if (request.method !== "POST") return json({ ok: false, error: "POST required" }, 405);
-  if (!env.TG_BOT_TOKEN) return json({ ok: false, error: "TG_BOT_TOKEN secret not set on worker" }, 503);
-  let payload;
+async function tgSendMessage(env, chatId, text) {
+  if (!env.TG_BOT_TOKEN) return;
   try {
-    payload = await request.json();
-  } catch {
-    return json({ ok: false, error: "invalid json" }, 400);
-  }
-  if (!payload || typeof payload !== "object") return json({ ok: false, error: "invalid payload" }, 400);
-
-  const check = await verifyTgHash(payload, env.TG_BOT_TOKEN);
-  if (!check.ok) return json({ ok: false, error: check.reason }, 401);
-
-  const user = sanitizeUser(payload);
-  const sub = await readSubscription(env, user.id);
-  return json({ ok: true, user, subscription: sub });
+    await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true }),
+    });
+  } catch { /* noop */ }
 }
+
+// ---------- Login via deep-link ----------
+
+export async function handleTgLoginPoll(url, env) {
+  const token = (url.searchParams.get("token") || "").trim();
+  if (!token || !/^[a-zA-Z0-9_-]{8,128}$/.test(token)) return json({ ok: false, error: "bad token" }, 400);
+  if (!env.TIDAL_KV) return json({ ok: false, error: "kv not bound" }, 503);
+  const raw = await env.TIDAL_KV.get(`login:${token}`);
+  if (!raw) return json({ ok: false, pending: true });
+  let payload;
+  try { payload = JSON.parse(raw); }
+  catch { return json({ ok: false, error: "corrupt" }, 500); }
+  // One-shot: удаляем, чтобы токен нельзя было переиспользовать.
+  await env.TIDAL_KV.delete(`login:${token}`);
+  const sub = await readSubscription(env, payload.id);
+  return json({ ok: true, user: sanitizeUser(payload), subscription: sub });
+}
+
+export async function handleTgBotWebhook(request, env) {
+  if (request.method !== "POST") return json({ ok: false, error: "POST required" }, 405);
+  const expected = env.TG_WEBHOOK_SECRET;
+  if (expected) {
+    const provided = request.headers.get("x-telegram-bot-api-secret-token") || "";
+    if (provided !== expected) return json({ ok: false, error: "bad secret" }, 403);
+  }
+  let update;
+  try { update = await request.json(); }
+  catch { return json({ ok: false, error: "bad json" }, 400); }
+
+  const msg = update && (update.message || update.edited_message);
+  if (!msg || !msg.from) return json({ ok: true });
+
+  const from = msg.from;
+  const text = String(msg.text || "").trim();
+  const startMatch = text.match(/^\/start(?:@\w+)?\s+(\S+)/);
+  const payload = startMatch ? startMatch[1] : "";
+
+  if (payload.startsWith("login_")) {
+    const token = payload.slice("login_".length);
+    if (/^[a-zA-Z0-9_-]{8,128}$/.test(token) && env.TIDAL_KV) {
+      const sanitized = sanitizeUser(from);
+      await env.TIDAL_KV.put(`login:${token}`, JSON.stringify(sanitized), {
+        expirationTtl: LOGIN_TTL_SECONDS,
+      });
+      const sub = await readSubscription(env, sanitized.id);
+      const line = sub.admin
+        ? "🛠 Админ-доступ подтверждён. Возвращайся на сайт — там уже всё."
+        : sub.subscribed
+          ? "✅ Вход подтверждён. Подписка активна до " + new Date(sub.until * 1000).toLocaleDateString("ru-RU") + "."
+          : "✅ Вход подтверждён. Возвращайся на сайт — там уже всё.";
+      await tgSendMessage(env, from.id, line);
+    }
+    return json({ ok: true });
+  }
+
+  if (payload.startsWith("pay_") || text.startsWith("/pay")) {
+    await tgSendMessage(
+      env,
+      from.id,
+      "💸 Подписка 99 ₽/мес. Напиши админу для активации — как только оплата пройдёт, подписка включится автоматически.",
+    );
+    return json({ ok: true });
+  }
+
+  if (text.startsWith("/start")) {
+    await tgSendMessage(
+      env,
+      from.id,
+      "Привет! Это бот музончика. Чтобы войти на сайт — жми «Войти через Telegram» там, откуда пришёл, не здесь.",
+    );
+    return json({ ok: true });
+  }
+
+  return json({ ok: true });
+}
+
+// ---------- Subscription status ----------
 
 export async function handleTgStatus(url, env) {
   const id = url.searchParams.get("id");
@@ -108,23 +151,19 @@ export async function handleTgStatus(url, env) {
   return json({ ok: true, subscription: sub });
 }
 
-// Minimal webhook the bot can point at to flip subscription state.
-// Protected by a shared secret `TG_WEBHOOK_SECRET` passed via `?k=...` or
-// `x-webhook-secret` header. Expected body: { tg_id, months }.
-export async function handleTgWebhook(url, request, env) {
-  const secret = env.TG_WEBHOOK_SECRET;
-  if (!secret) return json({ ok: false, error: "TG_WEBHOOK_SECRET not set" }, 503);
-  const provided = url.searchParams.get("k") || request.headers.get("x-webhook-secret") || "";
+// ---------- Manual subscription webhook (for bot admin) ----------
+// POST /tg/webhook?k=<TG_ADMIN_SECRET>  body: { tg_id, months }
+export async function handleTgSubscribe(url, request, env) {
+  const secret = env.TG_ADMIN_SECRET;
+  if (!secret) return json({ ok: false, error: "TG_ADMIN_SECRET not set" }, 503);
+  const provided = url.searchParams.get("k") || request.headers.get("x-admin-secret") || "";
   if (provided !== secret) return json({ ok: false, error: "forbidden" }, 403);
   if (request.method !== "POST") return json({ ok: false, error: "POST required" }, 405);
   if (!env.TIDAL_KV) return json({ ok: false, error: "KV not bound" }, 503);
 
   let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ ok: false, error: "invalid json" }, 400);
-  }
+  try { body = await request.json(); }
+  catch { return json({ ok: false, error: "invalid json" }, 400); }
   const tgId = Number(body && body.tg_id);
   const months = Math.max(1, Math.min(24, Number((body && body.months) || 1)));
   if (!tgId) return json({ ok: false, error: "missing tg_id" }, 400);

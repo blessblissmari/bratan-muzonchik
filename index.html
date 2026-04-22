@@ -38,10 +38,14 @@
       <span class="source-tag">только официал</span>
     </label>
     <div class="header-actions">
-      <div id="tgWidgetSlot" class="tg-slot" aria-label="Войти через Telegram"></div>
+      <button id="tgLoginBtn" class="tg-login-btn" type="button" title="Войти через Telegram">
+        <span class="tg-login-ico" aria-hidden="true">✈</span>
+        <span class="tg-login-label">Войти через Telegram</span>
+      </button>
       <span id="tgUserPill" class="tg-pill" hidden>
         <img id="tgUserPhoto" alt="" />
         <span id="tgUserName"></span>
+        <span id="tgAdminBadge" class="tg-admin" hidden title="Админ">ADMIN</span>
         <button id="tgLogoutBtn" type="button" title="Выйти" aria-label="Выйти">✕</button>
       </span>
       <button id="installBtn" class="install-btn" type="button" hidden title="Установить как приложение">Установить</button>

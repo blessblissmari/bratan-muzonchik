@@ -51,27 +51,31 @@
     ytWrap: $('#ytEmbedWrap'),
     payBtn: $('#payBtn'),
     installBtn: $('#installBtn'),
-    tgWidgetSlot: $('#tgWidgetSlot'),
+    tgLoginBtn: $('#tgLoginBtn'),
     tgUserPill: $('#tgUserPill'),
     tgUserPhoto: $('#tgUserPhoto'),
     tgUserName: $('#tgUserName'),
+    tgAdminBadge: $('#tgAdminBadge'),
     tgLogoutBtn: $('#tgLogoutBtn'),
     paywallModal: $('#paywallModal'),
     paywallCta: $('#paywallCta'),
   };
 
-  // Paywall + Telegram login.
-  // 1) Замени TG_BOT_USERNAME на username реального бота (без @).
-  //    В @BotFather: /setdomain -> blessblissmari.github.io (обязательно).
-  // 2) PAYWALL_TG_URL должен указывать на того же бота (start-param — deep link).
-  // 3) На воркере надо выставить секреты: TG_BOT_TOKEN (обязателен для /tg/verify),
-  //    TG_WEBHOOK_SECRET (опционально, для /tg/webhook из бота).
+  // Paywall + Telegram auth.
+  // Flow: кнопка "Войти через TG" открывает t.me/<bot>?start=login_<token>.
+  // Бот отправляет update на наш Cloudflare Worker /tg/bot-webhook, тот кладёт
+  // юзера в KV по ключу login:<token>. Фронт пуллит /tg/login/poll?token=<token>.
+  // Никакого номера телефона / SMS — только Start в TG.
   const TG_BOT_USERNAME = 'bratan_muzonchik_bot';
   const PAYWALL_TG_URL = `https://t.me/${TG_BOT_USERNAME}?start=pay`;
   const PAYWALL_PRICE_LABEL = 'Оплатить 99 ₽/мес';
   const LS_KEY_TG_USER = 'bratan:tg_user:v1';
   const LS_KEY_PLAYS = 'bratan:plays:v1';
   const FREE_DAILY_LIMIT = 3;
+  // Админы — безлимитный доступ. Должен совпадать со списком в worker/src/tg.js.
+  const ADMIN_TG_IDS = new Set([898846950, 422896004]);
+  const TG_LOGIN_POLL_INTERVAL_MS = 2000;
+  const TG_LOGIN_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
   // ---------- State ----------
   const state = {
@@ -837,6 +841,7 @@
   function isSubscribed() {
     const user = loadTgUser();
     if (!user) return false;
+    if (ADMIN_TG_IDS.has(Number(user.id))) return true;
     const sub = user.subscription;
     if (!sub) return false;
     if (sub.subscribed === true) return true;
@@ -1115,64 +1120,94 @@
   function renderAuthUi() {
     const user = loadTgUser();
     if (user) {
-      if (els.tgWidgetSlot) els.tgWidgetSlot.hidden = true;
+      if (els.tgLoginBtn) els.tgLoginBtn.hidden = true;
       if (els.tgUserPill) els.tgUserPill.hidden = false;
       if (els.tgUserName) els.tgUserName.textContent = user.username ? '@' + user.username : (user.first_name || 'you');
       if (els.tgUserPhoto) {
         if (user.photo_url) els.tgUserPhoto.src = user.photo_url;
         else els.tgUserPhoto.removeAttribute('src');
       }
+      if (els.tgAdminBadge) els.tgAdminBadge.hidden = !ADMIN_TG_IDS.has(Number(user.id));
       if (els.payBtn) {
         const url = new URL(PAYWALL_TG_URL);
         url.searchParams.set('start', 'pay_' + user.id);
         els.payBtn.href = url.toString();
       }
     } else {
-      if (els.tgWidgetSlot) els.tgWidgetSlot.hidden = false;
+      if (els.tgLoginBtn) {
+        els.tgLoginBtn.hidden = false;
+        els.tgLoginBtn.classList.remove('loading');
+      }
       if (els.tgUserPill) els.tgUserPill.hidden = true;
+      if (els.tgAdminBadge) els.tgAdminBadge.hidden = true;
       if (els.payBtn) els.payBtn.href = PAYWALL_TG_URL;
     }
   }
 
-  function injectTelegramWidget() {
-    const slot = els.tgWidgetSlot;
-    if (!slot || slot.dataset.injected) return;
-    if (!TG_BOT_USERNAME) return;
-    slot.dataset.injected = '1';
-    const s = document.createElement('script');
-    s.async = true;
-    s.src = 'https://telegram.org/js/telegram-widget.js?22';
-    s.setAttribute('data-telegram-login', TG_BOT_USERNAME);
-    s.setAttribute('data-size', 'medium');
-    s.setAttribute('data-radius', '20');
-    s.setAttribute('data-onauth', 'onTelegramAuth(user)');
-    s.setAttribute('data-request-access', 'write');
-    slot.appendChild(s);
+  function genLoginToken() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '');
+    const a = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
   }
 
-  window.onTelegramAuth = async function onTelegramAuth(user) {
+  let tgPollTimer = null;
+  let tgPollDeadline = 0;
+
+  function stopTgPoll() {
+    if (tgPollTimer) { clearTimeout(tgPollTimer); tgPollTimer = null; }
+    if (els.tgLoginBtn) els.tgLoginBtn.classList.remove('loading');
+  }
+
+  async function pollOnce(token) {
     try {
-      const r = await fetch(`${API_BASE}/tg/verify`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(user),
-      });
+      const r = await fetch(`${API_BASE}/tg/login/poll?token=${encodeURIComponent(token)}`);
       const data = await r.json().catch(() => ({}));
-      if (!r.ok || !data.ok) throw new Error(data.error || ('HTTP ' + r.status));
-      saveTgUser({ ...data.user, subscription: data.subscription || null });
-      renderAuthUi();
-      hidePaywall();
-    } catch (e) {
-      // Fallback: fail closed but also keep the raw user so UI shows something useful.
-      // Hash verification is the security boundary — no verify, no access to gated features.
-      console.warn('[tg] verify failed:', e);
-      setStatus('Не вышло подтвердить Telegram-логин: ' + (e && e.message ? e.message : e));
+      if (data && data.ok && data.user) {
+        saveTgUser({ ...data.user, subscription: data.subscription || null });
+        renderAuthUi();
+        hidePaywall();
+        setStatus('Вошёл как @' + (data.user.username || data.user.first_name || data.user.id));
+        return true;
+      }
+    } catch { /* transient — продолжим пуллить */ }
+    return false;
+  }
+
+  function schedulePoll(token) {
+    if (Date.now() > tgPollDeadline) {
+      stopTgPoll();
+      setStatus('Время на вход вышло. Нажми «Войти через Telegram» ещё раз.');
+      return;
     }
-  };
+    tgPollTimer = setTimeout(async () => {
+      const ok = await pollOnce(token);
+      if (ok) { stopTgPoll(); return; }
+      schedulePoll(token);
+    }, TG_LOGIN_POLL_INTERVAL_MS);
+  }
+
+  function startTgLogin() {
+    stopTgPoll();
+    const token = genLoginToken();
+    tgPollDeadline = Date.now() + TG_LOGIN_POLL_TIMEOUT_MS;
+    const url = `https://t.me/${TG_BOT_USERNAME}?start=login_${token}`;
+    // Открываем в новой вкладке (мобилки — в приложении TG) и начинаем пуллить.
+    window.open(url, '_blank', 'noopener,noreferrer');
+    if (els.tgLoginBtn) els.tgLoginBtn.classList.add('loading');
+    setStatus('Ждём подтверждения в Telegram…');
+    schedulePoll(token);
+  }
 
   async function refreshSubscription() {
     const user = loadTgUser();
     if (!user || !user.id) return;
+    // Админы безлимитные и без обращения к сети.
+    if (ADMIN_TG_IDS.has(Number(user.id))) {
+      saveTgUser({ ...user, subscription: { subscribed: true, until: 9999999999, admin: true } });
+      renderAuthUi();
+      return;
+    }
     try {
       const r = await fetch(`${API_BASE}/tg/status?id=${encodeURIComponent(user.id)}`);
       if (!r.ok) return;
@@ -1186,20 +1221,16 @@
 
   function setupAuth() {
     renderAuthUi();
-    if (!loadTgUser()) injectTelegramWidget();
-    else refreshSubscription();
+    if (loadTgUser()) refreshSubscription();
+    if (els.tgLoginBtn) els.tgLoginBtn.addEventListener('click', startTgLogin);
     if (els.tgLogoutBtn) {
       els.tgLogoutBtn.addEventListener('click', () => {
+        stopTgPoll();
         saveTgUser(null);
         renderAuthUi();
-        // Re-inject widget so user can log back in without reload.
-        if (els.tgWidgetSlot) {
-          els.tgWidgetSlot.innerHTML = '';
-          delete els.tgWidgetSlot.dataset.injected;
-        }
-        injectTelegramWidget();
       });
     }
+    window.addEventListener('beforeunload', stopTgPoll);
   }
 
   // ---------- PWA ----------
