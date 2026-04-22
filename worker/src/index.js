@@ -8,7 +8,12 @@ import {
   handleTidalAudio,
   handleTidalDownload,
 } from "./tidal.js";
-import { handleTgVerify, handleTgStatus, handleTgWebhook } from "./tg.js";
+import {
+  handleTgLoginPoll,
+  handleTgBotWebhook,
+  handleTgStatus,
+  handleTgSubscribe,
+} from "./tg.js";
 //
 // Endpoints:
 //   GET  /search?q=<query>&limit=<n>       -> SoundCloud /search/tracks JSON
@@ -385,12 +390,14 @@ export default {
         resp = await handleTidalAudio(url, request);
       } else if (url.pathname === "/tidal/download") {
         resp = await handleTidalDownload(url, request, env, ctx);
-      } else if (url.pathname === "/tg/verify") {
-        resp = await handleTgVerify(request, env);
+      } else if (url.pathname === "/tg/login/poll") {
+        resp = await handleTgLoginPoll(url, env);
+      } else if (url.pathname === "/tg/bot-webhook") {
+        resp = await handleTgBotWebhook(request, env);
       } else if (url.pathname === "/tg/status") {
         resp = await handleTgStatus(url, env);
-      } else if (url.pathname === "/tg/webhook") {
-        resp = await handleTgWebhook(url, request, env);
+      } else if (url.pathname === "/tg/subscribe") {
+        resp = await handleTgSubscribe(url, request, env);
       } else {
         resp = json({ error: "not found" }, 404);
       }
