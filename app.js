@@ -777,8 +777,9 @@
     if (!session) return;
     try {
       if (!state.featured || !state.featured.item) {
-        await fetch(`${API_BASE}/tg/featured?session=${encodeURIComponent(session)}`, { method: 'DELETE' });
-        lastPushedFeaturedJson = '';
+        const r = await fetch(`${API_BASE}/tg/featured?session=${encodeURIComponent(session)}`, { method: 'DELETE' });
+        if (r.ok) lastPushedFeaturedJson = '';
+        else if (r.status === 401) saveTgSession(null);
         return;
       }
       const body = JSON.stringify({ item: state.featured.item, image: state.featured.image || '' });
