@@ -1338,8 +1338,16 @@
 
   function applySourceToUi() {
     els.sourceSel.value = state.source;
-    // Clear results when switching source — they refer to the previous provider.
+    // Clear results when switching source — они от прежнего провайдера.
     state.results = [];
+    state.sets = [];
+    state.resultTab = 'tracks';
+    if (els.resultTabs) {
+      els.resultTabs.hidden = state.source !== SOURCES.SC;
+      for (const t of els.resultTabs.querySelectorAll('.tab')) {
+        t.classList.toggle('active', t.dataset.tab === 'tracks');
+      }
+    }
     renderResults();
     const ph = state.source === SOURCES.TD
       ? 'Ищем на Tidal — трек, артист, альбом…'

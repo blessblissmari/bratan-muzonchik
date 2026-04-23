@@ -54,7 +54,7 @@ let memoClientIdAt = 0;
 
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, OPTIONS",
+  "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
   "access-control-allow-headers": "Content-Type, Range",
   "access-control-expose-headers": "Content-Length, Content-Type, Content-Range, Accept-Ranges",
   "access-control-max-age": "86400",
@@ -422,7 +422,7 @@ async function handleYtAudio(url, req) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...CORS_HEADERS, "access-control-allow-methods": "GET, POST, OPTIONS" } });
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...CORS_HEADERS } });
 
     try {
       let resp;
