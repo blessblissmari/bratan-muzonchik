@@ -35,7 +35,10 @@
         <option value="soundcloud">SoundCloud</option>
         <option value="youtube">YouTube</option>
       </select>
-      <span class="source-tag">только официал</span>
+    </label>
+    <label class="official-toggle" title="Показывать только официальные релизы (верифицированные артисты/лейблы)">
+      <input id="officialToggle" type="checkbox" />
+      <span>только официал</span>
     </label>
     <div class="header-actions">
       <button id="tgLoginBtn" class="tg-login-btn" type="button" title="Войти через Telegram">
@@ -63,6 +66,11 @@
         <h2>Результаты</h2>
         <span id="statusLine" class="status"></span>
       </div>
+      <div id="resultTabs" class="result-tabs" hidden>
+        <button type="button" class="tab active" data-tab="tracks">Треки</button>
+        <button type="button" class="tab" data-tab="albums">Альбомы</button>
+        <button type="button" class="tab" data-tab="playlists">Плейлисты</button>
+      </div>
       <ul id="results" class="list"></ul>
     </section>
 
@@ -77,6 +85,24 @@
           <input id="importFile" type="file" accept="application/json" hidden />
         </div>
       </div>
+
+      <div id="featuredCard" class="featured-card" hidden>
+        <div class="featured-art">
+          <img id="featuredImg" alt="" />
+          <button id="featuredPlay" class="featured-play" type="button" aria-label="Играть закреплённый трек">▶</button>
+        </div>
+        <div class="featured-meta">
+          <div class="featured-label">Закреплён</div>
+          <div id="featuredTitle" class="featured-title"></div>
+          <div id="featuredArtist" class="featured-artist"></div>
+          <div class="featured-actions">
+            <button id="featuredChangeImg" type="button" title="Загрузить свою картинку">🖼 Картинка</button>
+            <button id="featuredRemove" type="button" title="Убрать закреп">✕ Убрать</button>
+          </div>
+        </div>
+        <input id="featuredImgFile" type="file" accept="image/*" hidden />
+      </div>
+
       <ul id="playlist" class="list"></ul>
       <p class="hint">Треки сохраняются у тебя в браузере (localStorage). Перетаскивай за ручку <span class="drag-sample">≡</span> чтобы менять порядок.</p>
     </section>
@@ -156,13 +182,27 @@
       </div>
       <div class="row-actions">
         <button class="play" title="Играть">▶</button>
+        <button class="pin" title="Закрепить трек" hidden>📌</button>
         <button class="dl" title="Скачать на устройство" hidden>⇩</button>
         <button class="remove" title="Удалить">✕</button>
       </div>
     </li>
   </template>
 
+  <template id="tpl-set">
+    <li class="row set-row">
+      <img class="thumb" alt="" />
+      <div class="meta">
+        <div class="title"></div>
+        <div class="sub"></div>
+      </div>
+      <div class="row-actions">
+        <button class="open-set" title="Открыть и добавить в плейлист">＋</button>
+      </div>
+    </li>
+  </template>
+
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"></script>
-  <script src="app.js?v=8" defer></script>
+  <script src="app.js?v=9" defer></script>
 </body>
 </html>

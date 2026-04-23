@@ -17,6 +17,8 @@
   const LS_KEY_VOLUME = 'bratan:volume:v1';
   const LS_KEY_LOOP = 'bratan:loop:v1';
   const LS_KEY_SOURCE = 'bratan:source:v1';
+  const LS_KEY_OFFICIAL_ONLY = 'bratan:official-only:v1';
+  const LS_KEY_FEATURED = 'bratan:featured:v1';
 
   const SOURCES = { SC: 'soundcloud', YT: 'youtube', TD: 'tidal' };
   const VALID_SOURCES = new Set(Object.values(SOURCES));
@@ -59,6 +61,16 @@
     tgLogoutBtn: $('#tgLogoutBtn'),
     paywallModal: $('#paywallModal'),
     paywallCta: $('#paywallCta'),
+    officialToggle: $('#officialToggle'),
+    resultTabs: $('#resultTabs'),
+    featuredCard: $('#featuredCard'),
+    featuredImg: $('#featuredImg'),
+    featuredTitle: $('#featuredTitle'),
+    featuredArtist: $('#featuredArtist'),
+    featuredPlay: $('#featuredPlay'),
+    featuredChangeImg: $('#featuredChangeImg'),
+    featuredRemove: $('#featuredRemove'),
+    featuredImgFile: $('#featuredImgFile'),
   };
 
   // Paywall + Telegram auth.
@@ -80,8 +92,12 @@
 
   // ---------- State ----------
   const state = {
-    source: loadSource(),       // 'soundcloud' | 'youtube' — влияет на поиск
+    source: loadSource(),       // 'soundcloud' | 'youtube' | 'tidal'
+    officialOnly: loadOfficialOnly(), // фильтр «только официал», по умолчанию OFF
+    resultTab: 'tracks',        // 'tracks' | 'albums' | 'playlists' (только SC)
     results: [],
+    sets: [],                   // список альбомов/плейлистов SoundCloud
+    featured: loadFeaturedLocal(), // {item, image} | null — закреплённый трек со своей картинкой
     playlist: loadPlaylist(),
     currentId: null,            // id of currently-loaded track (SC numeric / YT 11-char)
     currentItem: null,          // full item (we need item.source to route play)
@@ -138,6 +154,27 @@
   }
   function saveSource(s) { localStorage.setItem(LS_KEY_SOURCE, s); }
 
+  function loadOfficialOnly() {
+    return localStorage.getItem(LS_KEY_OFFICIAL_ONLY) === '1';
+  }
+  function saveOfficialOnly(v) {
+    localStorage.setItem(LS_KEY_OFFICIAL_ONLY, v ? '1' : '0');
+  }
+
+  function loadFeaturedLocal() {
+    try {
+      const s = localStorage.getItem(LS_KEY_FEATURED);
+      if (!s) return null;
+      const f = JSON.parse(s);
+      if (f && f.item && f.item.id && f.item.source) return f;
+    } catch {}
+    return null;
+  }
+  function saveFeaturedLocal(f) {
+    if (f && f.item) localStorage.setItem(LS_KEY_FEATURED, JSON.stringify(f));
+    else localStorage.removeItem(LS_KEY_FEATURED);
+  }
+
   function fetchWithTimeout(url, ms) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), ms);
@@ -168,18 +205,23 @@
     return REUPLOAD_PATTERNS.some((re) => re.test(t));
   }
 
-  function isOfficialSCTrack(tr) {
+  function isPlayableSCTrack(tr) {
     if (!tr || tr.kind !== 'track') return false;
     if (tr.state !== 'finished') return false;
     if (tr.streamable === false) return false;
     if (tr.sharing && tr.sharing !== 'public') return false;
+    if (!pickHlsMp3Transcoding(tr)) return false;
+    return true;
+  }
+
+  function isOfficialSCTrack(tr) {
+    if (!isPlayableSCTrack(tr)) return false;
     const user = tr.user || {};
     const pm = tr.publisher_metadata || null;
     const verified = user.verified === true;
     const hasPublisherReleaseInfo = !!(pm && (pm.artist || pm.album_title || pm.isrc));
     if (!verified && !hasPublisherReleaseInfo) return false;
     if (looksLikeReupload(tr.title, user.username)) return false;
-    if (!pickHlsMp3Transcoding(tr)) return false;
     return true;
   }
 
@@ -227,12 +269,14 @@
     };
   }
 
-  function isOfficialYt(item) {
-    // Piped music_songs уже отдаёт только раздел YouTube Music "Songs"
-    // (т.е. релизы лейблов и верифицированных артистов). `uploaderVerified`
-    // в Piped-ответе приходит false даже для VEVO/Official — не используем его.
+  function isPlayableYt(item) {
     if (!item || !item.id) return false;
     if (item.duration != null && item.duration < 30) return false;
+    return true;
+  }
+
+  function isOfficialYt(item) {
+    if (!isPlayableYt(item)) return false;
     if (looksLikeReupload(item.title, item.artist)) return false;
     return true;
   }
@@ -291,6 +335,35 @@
     return true;
   }
 
+  async function searchScSets(query, kind) {
+    const url = `${API_BASE}/sc/${kind}?q=${encodeURIComponent(query)}&limit=30`;
+    const res = await fetchWithTimeout(url, 15000);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    return Array.isArray(data.collection) ? data.collection : [];
+  }
+
+  async function fetchScSet(id) {
+    const url = `${API_BASE}/sc/set?id=${encodeURIComponent(id)}`;
+    const res = await fetchWithTimeout(url, 20000);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }
+
+  function normalizeScSet(s) {
+    const user = s.user || {};
+    let thumb = s.artwork_url || (user.avatar_url || '');
+    if (thumb) thumb = thumb.replace(/-large(\.[a-z]+)$/i, '-t300x300$1');
+    return {
+      id: s.id,
+      title: (s.title || '').trim() || '(без названия)',
+      artist: (user.username || '').trim() || 'SoundCloud',
+      thumb,
+      trackCount: s.track_count || 0,
+      kind: s.set_type || (s.is_album ? 'album' : 'playlist'),
+    };
+  }
+
   async function runSearch() {
     const q = els.search.value.trim();
     if (!q) return;
@@ -299,42 +372,57 @@
       : state.source === SOURCES.YT ? 'YouTube Music'
       : 'SoundCloud';
     setStatus(`Ищу на ${srcLabel}…`);
+    const showTabs = state.source === SOURCES.SC;
+    if (els.resultTabs) els.resultTabs.hidden = !showTabs;
+    if (!showTabs) state.resultTab = 'tracks';
     try {
       if (state.source === SOURCES.TD) {
         const raw = await searchTidal(q);
         const items = raw.map(normalizeTidalItem).filter(isOfficialTidal);
-        state.results = items;
+        state.results = items; state.sets = [];
         renderResults();
         if (!items.length) setStatus('Ничего не нашёл, бро.');
         else setStatus(`Найдено: ${items.length} треков (Tidal).`);
       } else if (state.source === SOURCES.YT) {
         const raw = await searchYouTube(q);
-        const items = raw.map(normalizeYtItem).filter(isOfficialYt);
-        state.results = items;
+        const passes = state.officialOnly ? isOfficialYt : isPlayableYt;
+        const items = raw.map(normalizeYtItem).filter(passes);
+        state.results = items; state.sets = [];
         renderResults();
         const dropped = raw.length - items.length;
         if (!items.length && raw.length) setStatus('Нашёл только перезаливы/каверы — уточни запрос.');
         else if (!items.length) setStatus('Ничего не нашёл, бро.');
-        else if (dropped > 0) setStatus(`Найдено: ${items.length} официальных · отсеял ${dropped} не-официальных.`);
-        else setStatus(`Найдено: ${items.length} официальных треков.`);
-      } else {
+        else if (state.officialOnly && dropped > 0) setStatus(`Найдено: ${items.length} официальных · отсеял ${dropped}.`);
+        else setStatus(`Найдено: ${items.length} треков (YouTube).`);
+      } else if (state.resultTab === 'tracks') {
         const raw = await searchSoundCloud(q);
-        const items = raw.filter(isOfficialSCTrack).map(normalizeSCTrack);
-        state.results = items;
+        const passes = state.officialOnly ? isOfficialSCTrack : isPlayableSCTrack;
+        const items = raw.filter(passes).map(normalizeSCTrack);
+        state.results = items; state.sets = [];
         renderResults();
         const dropped = raw.length - items.length;
-        if (!items.length && raw.length) setStatus('Нашёл только перезаливы/каверы — уточни запрос (артист + трек).');
+        if (!items.length && raw.length && state.officialOnly) setStatus('Нашёл только перезаливы/каверы — выключи «только официал» или уточни запрос.');
         else if (!items.length) setStatus('Ничего не нашёл, бро.');
-        else if (dropped > 0) setStatus(`Найдено: ${items.length} официальных · отсеял ${dropped} не-официальных.`);
-        else setStatus(`Найдено: ${items.length} официальных треков.`);
+        else if (state.officialOnly && dropped > 0) setStatus(`Найдено: ${items.length} официальных · отсеял ${dropped}.`);
+        else setStatus(`Найдено: ${items.length} треков (SoundCloud).`);
+      } else {
+        // SC albums / playlists
+        const kind = state.resultTab; // 'albums' | 'playlists'
+        const raw = await searchScSets(q, kind);
+        const sets = raw.map(normalizeScSet).filter((s) => s.id);
+        state.sets = sets; state.results = [];
+        renderResults();
+        const label = kind === 'albums' ? 'альбомов' : 'плейлистов';
+        if (!sets.length) setStatus(`Не нашёл ${label}.`);
+        else setStatus(`Найдено: ${sets.length} ${label}.`);
       }
     } catch (e) {
       console.error(e);
       const msg = (e && e.message) || 'сеть';
       if (state.source === SOURCES.YT && /piped|unreachable|bot/i.test(msg)) {
-        setStatus('YouTube временно недоступен (все прокси Piped блочат анонимные запросы). Переключись на SoundCloud.');
+        setStatus('YouTube временно недоступен. Переключись на Tidal/SoundCloud.');
       } else if (state.source === SOURCES.TD) {
-        setStatus('Tidal недоступен: ' + msg + '. Переключись на SoundCloud/YouTube.');
+        setStatus('Tidal недоступен: ' + msg + '.');
       } else {
         setStatus('Поиск не удался: ' + msg);
       }
@@ -346,8 +434,12 @@
 
   function renderResults() {
     els.results.innerHTML = '';
+    if (state.sets && state.sets.length) {
+      renderSets();
+      return;
+    }
     if (!state.results.length) {
-      els.results.innerHTML = '<li class="empty">Чё, бро? Введи запрос сверху — найдём официал.</li>';
+      els.results.innerHTML = '<li class="empty">Чё, бро? Введи запрос сверху.</li>';
       return;
     }
     const tpl = document.getElementById('tpl-result');
@@ -366,6 +458,47 @@
     }
   }
 
+  function renderSets() {
+    const tpl = document.getElementById('tpl-set');
+    for (const s of state.sets) {
+      const node = tpl.content.firstElementChild.cloneNode(true);
+      const img = node.querySelector('.thumb');
+      img.src = s.thumb || '';
+      img.loading = 'lazy';
+      node.querySelector('.title').textContent = s.title;
+      const countLabel = s.trackCount ? ` · ${s.trackCount} трек.` : '';
+      node.querySelector('.sub').textContent = `${s.artist}${countLabel}`;
+      node.querySelector('.open-set').addEventListener('click', () => openScSet(s));
+      els.results.appendChild(node);
+    }
+  }
+
+  async function openScSet(s) {
+    setStatus(`Открываю «${s.title}»…`);
+    try {
+      const data = await fetchScSet(s.id);
+      const rawTracks = Array.isArray(data.tracks) ? data.tracks : [];
+      const tracks = rawTracks.filter(isPlayableSCTrack).map(normalizeSCTrack);
+      if (!tracks.length) { setStatus('В этом наборе нет воспроизводимых треков.'); return; }
+      let added = 0;
+      for (const t of tracks) {
+        if (!state.playlist.some((x) => itemKey(x) === itemKey(t))) {
+          state.playlist.push({
+            source: t.source, id: t.id, urn: t.urn, title: t.title,
+            artist: t.artist, thumb: t.thumb, duration: t.duration,
+            verified: !!t.verified, permalink: t.permalink, transcoding: t.transcoding,
+          });
+          added++;
+        }
+      }
+      savePlaylist();
+      renderPlaylist();
+      setStatus(`Добавил в плейлист ${added} из ${tracks.length} треков из «${s.title}».`);
+    } catch (e) {
+      setStatus('Не смог открыть набор: ' + ((e && e.message) || 'ошибка'));
+    }
+  }
+
   function renderPlaylist() {
     els.playlist.innerHTML = '';
     if (!state.playlist.length) {
@@ -374,6 +507,7 @@
     }
     const tpl = document.getElementById('tpl-plitem');
     const curKey = state.currentItem ? itemKey(state.currentItem) : null;
+    const featKey = state.featured && state.featured.item ? itemKey(state.featured.item) : null;
     state.playlist.forEach((item, idx) => {
       const node = tpl.content.firstElementChild.cloneNode(true);
       fillRow(node, item);
@@ -384,6 +518,15 @@
         ev.stopPropagation();
         removeFromPlaylist(item);
       });
+      const pinBtn = node.querySelector('.pin');
+      if (pinBtn) {
+        pinBtn.hidden = false;
+        if (featKey && itemKey(item) === featKey) pinBtn.classList.add('active');
+        pinBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          pinTrackAsFeatured(item);
+        });
+      }
       node.addEventListener('dblclick', () => playItem(item, 'playlist'));
       attachDragHandlers(node);
       if (curKey && itemKey(item) === curKey && state.currentList === 'playlist') node.classList.add('playing');
@@ -524,6 +667,151 @@
       }
     };
     reader.readAsText(file);
+  }
+
+  // ---------- Featured (pinned) track ----------
+  function normalizeFeaturedItem(item) {
+    return {
+      source: item.source, id: item.id, urn: item.urn || null,
+      title: item.title, artist: item.artist, thumb: item.thumb || '',
+      duration: item.duration || null, verified: !!item.verified,
+      permalink: item.permalink || '', transcoding: item.transcoding || null,
+      audioQuality: item.audioQuality || null,
+    };
+  }
+
+  function pinTrackAsFeatured(item) {
+    const prevImage = (state.featured && state.featured.item && itemKey(state.featured.item) === itemKey(item))
+      ? (state.featured.image || '') : '';
+    state.featured = { item: normalizeFeaturedItem(item), image: prevImage };
+    saveFeaturedLocal(state.featured);
+    renderFeatured();
+    renderPlaylist();
+    scheduleServerFeaturedPush();
+    setStatus(`Закрепил «${item.title}». Можешь залить свою картинку.`);
+  }
+
+  function removeFeatured() {
+    state.featured = null;
+    saveFeaturedLocal(null);
+    renderFeatured();
+    renderPlaylist();
+    scheduleServerFeaturedPush(true);
+  }
+
+  async function setFeaturedImageFromFile(file) {
+    if (!file) return;
+    if (!/^image\//i.test(file.type)) { setStatus('Нужен файл-картинка.'); return; }
+    if (file.size > 600 * 1024) {
+      try {
+        const dataUrl = await resizeImageToDataUrl(file, 600);
+        applyFeaturedImage(dataUrl);
+      } catch { setStatus('Не смог прочитать картинку.'); }
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => applyFeaturedImage(String(reader.result || ''));
+    reader.onerror = () => setStatus('Не смог прочитать картинку.');
+    reader.readAsDataURL(file);
+  }
+
+  function applyFeaturedImage(dataUrl) {
+    if (!state.featured) return;
+    state.featured.image = dataUrl || '';
+    saveFeaturedLocal(state.featured);
+    renderFeatured();
+    scheduleServerFeaturedPush();
+    setStatus('Картинка закреплена.');
+  }
+
+  async function resizeImageToDataUrl(file, maxSide) {
+    const blobUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = blobUrl;
+      });
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      return c.toDataURL('image/jpeg', 0.85);
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+  }
+
+  function renderFeatured() {
+    const card = els.featuredCard;
+    if (!card) return;
+    const user = loadTgUser();
+    const f = state.featured;
+    if (!user || !f || !f.item) { card.hidden = true; return; }
+    card.hidden = false;
+    if (els.featuredImg) {
+      if (f.image) { els.featuredImg.src = f.image; els.featuredImg.style.filter = ''; }
+      else if (f.item.thumb) { els.featuredImg.src = f.item.thumb; els.featuredImg.style.filter = 'blur(8px)'; }
+      else { els.featuredImg.removeAttribute('src'); els.featuredImg.style.filter = 'blur(8px)'; }
+    }
+    if (els.featuredTitle) els.featuredTitle.textContent = f.item.title || '';
+    if (els.featuredArtist) els.featuredArtist.textContent = f.item.artist || '';
+  }
+
+  // ---------- Server featured sync ----------
+  let featuredPushTimer = null;
+  let lastPushedFeaturedJson = null;
+
+  function scheduleServerFeaturedPush(immediate) {
+    const session = loadTgSession();
+    if (!session) return;
+    if (featuredPushTimer) clearTimeout(featuredPushTimer);
+    featuredPushTimer = setTimeout(pushServerFeatured, immediate ? 0 : 1200);
+  }
+
+  async function pushServerFeatured() {
+    const session = loadTgSession();
+    if (!session) return;
+    try {
+      if (!state.featured || !state.featured.item) {
+        await fetch(`${API_BASE}/tg/featured?session=${encodeURIComponent(session)}`, { method: 'DELETE' });
+        lastPushedFeaturedJson = '';
+        return;
+      }
+      const body = JSON.stringify({ item: state.featured.item, image: state.featured.image || '' });
+      if (body === lastPushedFeaturedJson) return;
+      const r = await fetch(`${API_BASE}/tg/featured?session=${encodeURIComponent(session)}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      if (r.ok) lastPushedFeaturedJson = body;
+      else if (r.status === 401) saveTgSession(null);
+    } catch { /* transient */ }
+  }
+
+  async function pullServerFeatured() {
+    const session = loadTgSession();
+    if (!session) return;
+    try {
+      const r = await fetch(`${API_BASE}/tg/featured?session=${encodeURIComponent(session)}`);
+      if (!r.ok) { if (r.status === 401) saveTgSession(null); return; }
+      const data = await r.json().catch(() => null);
+      if (!data || !data.ok) return;
+      const text = String(data.featured || '');
+      if (!text) { lastPushedFeaturedJson = ''; return; }
+      let remote;
+      try { remote = JSON.parse(text); } catch { return; }
+      if (!remote || !remote.item || !remote.item.id) return;
+      state.featured = { item: remote.item, image: remote.image || '' };
+      saveFeaturedLocal(state.featured);
+      renderFeatured();
+      renderPlaylist();
+      lastPushedFeaturedJson = JSON.stringify(state.featured);
+    } catch { /* noop */ }
   }
 
   // ---------- Drag & drop reorder ----------
@@ -1103,6 +1391,46 @@
       applySourceToUi();
     });
 
+    if (els.officialToggle) {
+      els.officialToggle.checked = !!state.officialOnly;
+      els.officialToggle.addEventListener('change', () => {
+        state.officialOnly = !!els.officialToggle.checked;
+        saveOfficialOnly(state.officialOnly);
+        if (els.search.value.trim()) runSearch();
+      });
+    }
+
+    if (els.resultTabs) {
+      els.resultTabs.addEventListener('click', (ev) => {
+        const btn = ev.target.closest('.tab');
+        if (!btn) return;
+        const tab = btn.dataset.tab;
+        if (!tab || tab === state.resultTab) return;
+        state.resultTab = tab;
+        for (const t of els.resultTabs.querySelectorAll('.tab')) {
+          t.classList.toggle('active', t.dataset.tab === tab);
+        }
+        if (els.search.value.trim()) runSearch();
+      });
+    }
+
+    if (els.featuredPlay) {
+      els.featuredPlay.addEventListener('click', () => {
+        if (state.featured && state.featured.item) playItem(state.featured.item, 'playlist');
+      });
+    }
+    if (els.featuredChangeImg && els.featuredImgFile) {
+      els.featuredChangeImg.addEventListener('click', () => els.featuredImgFile.click());
+      els.featuredImgFile.addEventListener('change', (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (f) setFeaturedImageFromFile(f);
+        els.featuredImgFile.value = '';
+      });
+    }
+    if (els.featuredRemove) {
+      els.featuredRemove.addEventListener('click', () => removeFeatured());
+    }
+
     document.addEventListener('keydown', (e) => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target && e.target.tagName) || '')) return;
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
@@ -1214,6 +1542,7 @@
       if (els.tgAdminBadge) els.tgAdminBadge.hidden = true;
       if (els.payBtn) els.payBtn.href = PAYWALL_TG_URL;
     }
+    renderFeatured();
   }
 
   function genLoginToken() {
@@ -1242,6 +1571,7 @@
         hidePaywall();
         setStatus('Вошёл как @' + (data.user.username || data.user.first_name || data.user.id));
         pullServerPlaylist();
+        pullServerFeatured();
         return true;
       }
     } catch { /* transient — продолжим пуллить */ }
@@ -1303,11 +1633,14 @@
         saveTgUser(null);
         saveTgSession(null);
         lastPushedPlaylistJson = null;
+        lastPushedFeaturedJson = null;
         renderAuthUi();
+        renderFeatured();
       });
     }
-    // При возвращении на сайт с активной сессией — подтянуть серверный плейлист.
-    if (loadTgSession()) pullServerPlaylist();
+    // При возвращении на сайт с активной сессией — подтянуть серверный плейлист + featured.
+    if (loadTgSession()) { pullServerPlaylist(); pullServerFeatured(); }
+    renderFeatured();
     window.addEventListener('beforeunload', stopTgPoll);
   }
 

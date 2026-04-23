@@ -20,6 +20,7 @@
 const LOGIN_TTL_SECONDS = 5 * 60;
 const SESSION_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 дней
 const PLAYLIST_MAX_BYTES = 256 * 1024; // 256 KiB — потолок на случай дурных запросов
+const FEATURED_MAX_BYTES = 768 * 1024; // 768 KiB — с запасом на картинку в data-URL
 const SUB_FAR_FUTURE = 9999999999; // 2286 год
 const SUB_PERIOD_DAYS = 30;
 const SUB_PRICE_STARS = 99; // ≈ 99₽ на текущем курсе Telegram Stars.
@@ -178,6 +179,36 @@ export async function handleTgLoginPoll(url, env) {
   const sub = await readSubscription(env, payload.id);
   const session = await issueSession(env, payload.id);
   return json({ ok: true, user: sanitizeUser(payload), subscription: sub, session });
+}
+
+// ---------- Featured track (pinned с кастомной картинкой) ----------
+
+export async function handleTgFeatured(url, request, env) {
+  if (!env.TIDAL_KV) return json({ ok: false, error: "kv not bound" }, 503);
+  const session = url.searchParams.get("session") || request.headers.get("x-tg-session") || "";
+  const tgId = await resolveSession(env, session);
+  if (!tgId) return json({ ok: false, error: "bad session" }, 401);
+
+  if (request.method === "GET") {
+    const text = (await env.TIDAL_KV.get(`featured:${tgId}`)) || "";
+    return json({ ok: true, featured: text });
+  }
+  if (request.method === "DELETE") {
+    await env.TIDAL_KV.delete(`featured:${tgId}`);
+    return json({ ok: true });
+  }
+  if (request.method === "POST" || request.method === "PUT") {
+    const text = await request.text();
+    if (text.length > FEATURED_MAX_BYTES) return json({ ok: false, error: "too big" }, 413);
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { return json({ ok: false, error: "not json" }, 400); }
+    if (!parsed || !parsed.item || !parsed.item.id || !parsed.item.source) {
+      return json({ ok: false, error: "bad shape" }, 400);
+    }
+    await env.TIDAL_KV.put(`featured:${tgId}`, text);
+    return json({ ok: true });
+  }
+  return json({ ok: false, error: "method not allowed" }, 405);
 }
 
 // ---------- Playlist sync (stored as plain text JSON per TG id) ----------
