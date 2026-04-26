@@ -102,3 +102,26 @@ export function useUnlikeTrack() {
     },
   });
 }
+
+export function useIsTrackLiked(trackId: string | undefined): boolean {
+  const { data } = useLikedTracks(500, 0);
+  if (!trackId || !data) return false;
+  return data.items.some((t) => t.id === trackId);
+}
+
+export function useToggleLike(trackId: string | undefined) {
+  const liked = useIsTrackLiked(trackId);
+  const like = useLikeTrack();
+  const unlike = useUnlikeTrack();
+  const toggle = () => {
+    if (!trackId) return;
+    if (liked) unlike.mutate(trackId);
+    else like.mutate(trackId);
+  };
+  return {
+    liked,
+    toggle,
+    isPending: like.isPending || unlike.isPending,
+    error: like.error ?? unlike.error,
+  };
+}

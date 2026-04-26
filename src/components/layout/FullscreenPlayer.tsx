@@ -6,6 +6,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { usePlayerStore } from '@/store/player';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
+import { useToggleLike } from '@/hooks/useLibrary';
 import { Button } from '@/components/ui/Button';
 import { Visualizer } from '@/components/features/Visualizer';
 import { Equalizer } from '@/components/features/Equalizer';
@@ -28,6 +29,7 @@ export function FullscreenPlayer() {
   const { progress, seek } = useAudioPlayer();
   const reduce = useReducedMotion();
   const [eqOpen, setEqOpen] = useState(false);
+  const like = useToggleLike(currentTrack?.id);
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -193,8 +195,19 @@ export function FullscreenPlayer() {
                 className="flex-1 accent-[var(--color-accent)]"
                 aria-label="Громкость"
               />
-              <Button variant="ghost" size="icon" aria-label="Лайк">
-                <Heart size={16} />
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={like.toggle}
+                disabled={!currentTrack || like.isPending}
+                aria-label={like.liked ? 'Убрать из понравившегося' : 'Добавить в понравившееся'}
+                aria-pressed={like.liked}
+              >
+                <Heart
+                  size={16}
+                  fill={like.liked ? 'currentColor' : 'none'}
+                  className={like.liked ? 'text-[var(--color-accent)]' : ''}
+                />
               </Button>
             </div>
           </div>

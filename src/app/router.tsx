@@ -4,6 +4,7 @@ import { Sidebar } from '@/components/layout/Sidebar';
 import { BottomNav } from '@/components/layout/BottomNav';
 import { Player } from '@/components/layout/Player';
 import { FullscreenPlayer } from '@/components/layout/FullscreenPlayer';
+import { useAudioController } from '@/hooks/useAudioPlayer';
 import { PageTransition } from '@/components/ui/PageTransition';
 import { LandingPage } from '@/app/landing/page';
 import { SearchPage } from '@/app/search/page';
@@ -16,6 +17,7 @@ import { ArtistPage } from '@/app/artist/page';
 import { NotFoundPage } from '@/app/not-found/page';
 
 function AppLayout() {
+  useAudioController();
   return (
     <div className="flex min-h-dvh flex-col">
       <Header />
