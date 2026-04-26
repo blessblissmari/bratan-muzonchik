@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useAuthStore } from '@/store/auth';
 import type { Track, Playlist } from '@/types';
 
 interface LikedResponse {
@@ -101,4 +102,40 @@ export function useUnlikeTrack() {
       qc.invalidateQueries({ queryKey: ['playlists'] });
     },
   });
+}
+
+export function useIsTrackLiked(trackId: string | undefined) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery({
+    queryKey: ['liked-check', trackId],
+    queryFn: () => api.get<{ liked: boolean }>(`/library/like/${trackId}`),
+    enabled: !!trackId && !!accessToken,
+    staleTime: 30_000,
+  });
+}
+
+export function useToggleLike(trackId: string | undefined) {
+  const qc = useQueryClient();
+  const { data } = useIsTrackLiked(trackId);
+  const liked = data?.liked ?? false;
+
+  const like = useLikeTrack();
+  const unlike = useUnlikeTrack();
+
+  const toggle = () => {
+    if (!trackId) return;
+    qc.setQueryData<{ liked: boolean }>(['liked-check', trackId], { liked: !liked });
+    const onSettled = () => {
+      qc.invalidateQueries({ queryKey: ['liked-check', trackId] });
+    };
+    if (liked) unlike.mutate(trackId, { onSettled, onError: () => qc.setQueryData(['liked-check', trackId], { liked: true }) });
+    else like.mutate(trackId, { onSettled, onError: () => qc.setQueryData(['liked-check', trackId], { liked: false }) });
+  };
+
+  return {
+    liked,
+    toggle,
+    isPending: like.isPending || unlike.isPending,
+    error: like.error ?? unlike.error,
+  };
 }

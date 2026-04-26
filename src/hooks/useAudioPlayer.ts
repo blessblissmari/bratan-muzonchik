@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useSyncExternalStore } from 'react';
 import { usePlayerStore } from '@/store/player';
 import { api } from '@/lib/api';
 
@@ -29,11 +29,6 @@ function getBundle(): AudioBundle {
   }
   return bundle;
 }
-
-// Note: previously had a `reloadWithoutCors` fallback that nuked
-// audio.crossOrigin on error. Removed because once a MediaElementAudioSource
-// is attached (for the EQ/visualizer), reloading without CORS just produces
-// silent playback per the Web Audio spec. Better to surface the error.
 
 function ensureAudioGraph(): AudioBundle {
   const b = getBundle();
@@ -78,14 +73,21 @@ function ensureAudioGraph(): AudioBundle {
   return b;
 }
 
-export function useAudioPlayer() {
+/**
+ * Owns ALL audio side effects: loading tracks, play/pause, listener wiring,
+ * media-session integration. Must be mounted EXACTLY ONCE at the app root —
+ * mounting it in multiple components causes parallel `audio.src = url`
+ * writes which abort each other's `audio.play()` with an AbortError
+ * ("The fetching process for the media resource was aborted by the user
+ * agent at the user's request.").
+ */
+export function useAudioController() {
   const {
     currentTrack,
     isPlaying,
     volume,
     muted,
     repeat,
-    progress,
     setProgress,
     setDuration,
     setError,
@@ -114,6 +116,8 @@ export function useAudioPlayer() {
       await audio.play();
     } catch (err) {
       if (loadingRef.current !== trackId) return;
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'AbortError') return;
       const message = err instanceof Error ? err.message : String(err);
       console.error('[stream]', message);
       setError(message);
@@ -147,6 +151,8 @@ export function useAudioPlayer() {
         b.ctx.resume().catch(() => {});
       }
       audio.play().catch((err) => {
+        const name = err instanceof Error ? err.name : '';
+        if (name === 'AbortError') return;
         setError(err instanceof Error ? err.message : 'Не удалось воспроизвести');
         pause();
       });
@@ -175,8 +181,8 @@ export function useAudioPlayer() {
     };
     const onError = () => {
       const code = audio.error?.code;
+      if (code === 1) return; // MEDIA_ERR_ABORTED — обычно при смене трека, не ошибка для юзера
       const messages: Record<number, string> = {
-        1: 'Загрузка прервана',
         2: 'Сетевая ошибка',
         3: 'Не удалось декодировать',
         4: 'Формат не поддерживается',
@@ -206,6 +212,24 @@ export function useAudioPlayer() {
       navigator.mediaSession.setActionHandler('nexttrack', () => store.next());
     }
   }, []);
+}
+
+/**
+ * Read-only view: subscribes to progress and exposes seek().
+ * Safe to call from any number of components — does NOT touch audio.src
+ * or trigger loads.
+ */
+export function useAudioPlayer() {
+  const progress = useSyncExternalStore(
+    (cb) => {
+      const { audio } = getBundle();
+      audio.addEventListener('timeupdate', cb);
+      return () => audio.removeEventListener('timeupdate', cb);
+    },
+    () => getBundle().audio.currentTime,
+    () => 0,
+  );
+  const setProgress = usePlayerStore((s) => s.setProgress);
 
   const seek = useCallback((time: number) => {
     const { audio } = getBundle();

@@ -3,7 +3,7 @@ import { Play, Heart } from 'lucide-react';
 import { AuthGuard } from '@/components/features/AuthGuard';
 import { TrackItem } from '@/components/features/TrackItem';
 import { useTrack, useTrackRadio } from '@/hooks/useTrack';
-import { useLikeTrack } from '@/hooks/useLibrary';
+import { useToggleLike } from '@/hooks/useLibrary';
 import { usePlayerStore } from '@/store/player';
 import type { Track } from '@/types';
 import { Button } from '@/components/ui/Button';
@@ -12,7 +12,7 @@ export function TrackPage() {
   const { id } = useParams<{ id: string }>();
   const { data: track, isLoading } = useTrack(id ?? '');
   const { data: radio } = useTrackRadio(id ?? '');
-  const like = useLikeTrack();
+  const like = useToggleLike(id);
   const setTrack = usePlayerStore((s) => s.setTrack);
   const setQueue = usePlayerStore((s) => s.setQueue);
 
@@ -59,8 +59,15 @@ export function TrackPage() {
                   <Button onClick={handlePlay}>
                     <Play size={14} fill="currentColor" /> Слушать
                   </Button>
-                  <Button onClick={() => like.mutate(track.id)} variant="outline" size="icon" aria-label="Лайк">
-                    <Heart size={16} />
+                  <Button
+                    onClick={like.toggle}
+                    disabled={like.isPending}
+                    variant={like.liked ? 'primary' : 'outline'}
+                    size="icon"
+                    aria-label={like.liked ? 'Убрать из понравившегося' : 'Добавить в понравившееся'}
+                    aria-pressed={like.liked}
+                  >
+                    <Heart size={16} fill={like.liked ? 'currentColor' : 'none'} />
                   </Button>
                 </div>
               </div>

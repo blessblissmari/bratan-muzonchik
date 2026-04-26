@@ -52,6 +52,18 @@ library.post('/like/:trackId', async (c) => {
   return c.json({ ok: true, liked: true }, 201);
 });
 
+library.get('/like/:trackId', async (c) => {
+  const userId = c.get('userId');
+  const trackId = c.req.param('trackId');
+
+  const playlistId = await ensureLikedPlaylist(c.env.DB, userId);
+  const row = await c.env.DB.prepare(
+    'SELECT track_id FROM playlist_tracks WHERE playlist_id = ? AND track_id = ? LIMIT 1'
+  ).bind(playlistId, trackId).first();
+
+  return c.json({ liked: row !== null });
+});
+
 library.delete('/like/:trackId', async (c) => {
   const userId = c.get('userId');
   const trackId = c.req.param('trackId');
