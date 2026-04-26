@@ -1,13 +1,23 @@
 {
-  "name": "bratan-muzonchik-worker",
-  "version": "1.0.0",
+  "name": "bratan-music-worker",
+  "version": "0.1.0",
   "private": true,
-  "description": "Cloudflare Worker proxy for SoundCloud — CORS + client_id auto-refresh for bratan-muzonchik music player",
   "scripts": {
+    "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "lint": "eslint src/ --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "wrangler d1 execute bratan-muzonchik-db --local --file=src/db/migrations/0001_init.sql"
+  },
+  "dependencies": {
+    "hono": "^4.7.0"
   },
   "devDependencies": {
-    "wrangler": "^3.90.0"
+    "@cloudflare/workers-types": "^4.20250411.0",
+    "typescript": "^5.7.0",
+    "eslint": "^9.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "wrangler": "^4.0.0"
   }
 }
