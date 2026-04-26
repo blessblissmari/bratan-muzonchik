@@ -1,10 +1,37 @@
-name = "bratan-muzonchik"
-main = "src/index.js"
-compatibility_date = "2024-11-01"
+name = "bratan-muzonchik-api"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
 
-[observability]
-enabled = true
+[vars]
+ENVIRONMENT = "production"
+APP_URL = "https://blessblissmari.github.io/bratan-muzonchik/"
 
+# D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "bratan-muzonchik-db"
+database_id = "c9b28870-653b-434e-8250-7868ef58441c"
+
+# KV Namespace
 [[kv_namespaces]]
-binding = "TIDAL_KV"
-id = "382c18f78bae4de587a69fbb34b9deae"
+binding = "SESSIONS"
+id = "e42952d0b153484fa519dd1b5d4d36ae"
+
+# R2 Bucket — TODO: enable R2 in CF dashboard, then uncomment and run
+# `wrangler r2 bucket create bratan-muzonchik-tracks`
+# [[r2_buckets]]
+# binding = "TRACKS"
+# bucket_name = "bratan-muzonchik-tracks"
+
+# Secrets (set via `wrangler secret put`):
+# TIDAL_CLIENT_ID
+# TIDAL_CLIENT_SECRET
+# TIDAL_SESSION_TOKEN
+# TIDAL_REFRESH_TOKEN
+# TELEGRAM_BOT_TOKEN
+# TELEGRAM_BOT_USERNAME
+# TELEGRAM_ADMIN_IDS
+# TELEGRAM_WEBHOOK_SECRET
+# JWT_SECRET
+# JWT_REFRESH_SECRET
+# SESSION_ENCRYPTION_KEY

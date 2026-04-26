@@ -1,0 +1,136 @@
+import { Hono } from 'hono';
+import type { Context } from 'hono';
+import type { Env, Variables } from '../types/env';
+import { jwtAuth } from '../middleware/auth';
+import { TidalService } from '../services/tidal/TidalService';
+
+const tracks = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+const TIDAL_CDN_ALLOWED: RegExp[] = [
+  /^(.+\.)?audio\.tidal\.com$/i,
+  /^(.+\.)?tidal\.com$/i,
+  /^(.+\.)?akamaized\.net$/i,
+  /^(.+\.)?cloudfront\.net$/i,
+  /^(.+\.)?fa-v\d+\.tidal\.com$/i,
+  /^sp-[a-z0-9-]+\.audio\.tidal\.com$/i,
+  /^resources\.tidal\.com$/i,
+];
+
+async function proxyAudio(c: Context<{ Bindings: Env; Variables: Variables }>) {
+  const target = c.req.query('url');
+  if (!target) return c.json({ error: 'missing url' }, 400);
+  let parsed: URL;
+  try { parsed = new URL(target); } catch { return c.json({ error: 'invalid url' }, 400); }
+  if (parsed.protocol !== 'https:') return c.json({ error: 'https only' }, 400);
+  const host = parsed.hostname.toLowerCase();
+  if (!TIDAL_CDN_ALLOWED.some((re) => re.test(host))) {
+    return c.json({ error: `host not allowed: ${host}` }, 400);
+  }
+
+  const upstreamHeaders = new Headers();
+  const range = c.req.header('Range');
+  if (range) upstreamHeaders.set('Range', range);
+  upstreamHeaders.set('User-Agent', 'TIDAL/2026.4.23 CFNetwork/1494.0.7 Darwin/23.4.0');
+  upstreamHeaders.set('Accept', '*/*');
+
+  const upstream = await fetch(target, {
+    method: c.req.method === 'HEAD' ? 'HEAD' : 'GET',
+    headers: upstreamHeaders,
+    redirect: 'follow',
+  });
+  const out = new Headers();
+  for (const k of [
+    'content-type',
+    'content-length',
+    'content-range',
+    'accept-ranges',
+    'cache-control',
+    'etag',
+    'last-modified',
+  ]) {
+    const v = upstream.headers.get(k);
+    if (v) out.set(k, v);
+  }
+  if (!out.has('accept-ranges')) out.set('accept-ranges', 'bytes');
+  return new Response(c.req.method === 'HEAD' ? null : upstream.body, {
+    status: upstream.status,
+    headers: out,
+  });
+}
+
+tracks.get('/audio', proxyAudio);
+tracks.on('HEAD', '/audio', proxyAudio);
+
+tracks.use('/*', jwtAuth);
+
+tracks.get('/:id', async (c) => {
+  const id = c.req.param('id');
+  const tidal = new TidalService(c.env);
+  const track = await tidal.getTrack(id);
+  return c.json(track);
+});
+
+tracks.get('/:id/stream', async (c) => {
+  const id = c.req.param('id');
+  const userId = c.get('userId');
+  const isAdmin = c.get('isAdmin');
+
+  if (!isAdmin) {
+    const now = Math.floor(Date.now() / 1000);
+    const sub = await c.env.DB.prepare(
+      'SELECT id FROM subscriptions WHERE user_id = ? AND status = ? AND expires_at > ? LIMIT 1'
+    ).bind(userId, 'active', now).first();
+
+    if (!sub) {
+      const today = new Date().toISOString().split('T')[0];
+      const listen = await c.env.DB.prepare(
+        'SELECT count FROM daily_listens WHERE user_id = ? AND date = ?'
+      ).bind(userId, today).first<{ count: number }>();
+
+      const used = listen?.count ?? 0;
+      if (used >= 3) {
+        return c.json({ error: 'Лимит 3 трека в сутки исчерпан. Оформите подписку.' }, 403);
+      }
+
+      if (listen) {
+        await c.env.DB.prepare(
+          'UPDATE daily_listens SET count = count + 1 WHERE user_id = ? AND date = ?'
+        ).bind(userId, today).run();
+      } else {
+        await c.env.DB.prepare(
+          'INSERT INTO daily_listens (user_id, date, count) VALUES (?, ?, 1)'
+        ).bind(userId, today).run();
+      }
+    }
+  }
+
+  const override = await c.env.DB.prepare(
+    'SELECT r2_key, mime_type FROM track_overrides WHERE user_id = ? AND track_id = ? LIMIT 1'
+  ).bind(userId, id).first<{ r2_key: string; mime_type: string }>();
+
+  if (override) {
+    return c.json({ url: override.r2_key, mimeType: override.mime_type, source: 'override' });
+  }
+
+  const tidal = new TidalService(c.env);
+  const direct = await tidal.getStreamUrl(id);
+  const origin = new URL(c.req.url).origin;
+  const proxied = `${origin}/tracks/audio?url=${encodeURIComponent(direct)}`;
+  return c.json({ url: proxied, direct, source: 'tidal' });
+});
+
+tracks.get('/:id/download', async (c) => {
+  const id = c.req.param('id');
+  const tidal = new TidalService(c.env);
+  const url = await tidal.getDownloadUrl(id);
+  return c.json({ url, source: 'tidal' });
+});
+
+tracks.get('/:id/radio', async (c) => {
+  const id = c.req.param('id');
+  const tidal = new TidalService(c.env);
+  const tracks = await tidal.getTrackRadio(id);
+  return c.json({ items: tracks });
+});
+
+export { tracks };

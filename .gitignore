@@ -1,5 +1,39 @@
-.DS_Store
+# Dependencies
 node_modules/
+.pnp
+.pnp.js
+
+# Build
+dist/
+build/
+.wrangler/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.dev.vars
+
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
 *.log
+npm-debug.log*
+
+# Testing
+coverage/
+
+# Misc
+*.tgz
+.cache/
+*.tsbuildinfo
+vite.config.d.ts
