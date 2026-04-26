@@ -293,7 +293,7 @@ export async function handleTgBotWebhook(request, env) {
   try {
     console.log("[wh] update:", JSON.stringify({
       from: update.message?.from?.id || update.edited_message?.from?.id || null,
-      text: (update.message?.text || update.edited_message?.text || "").slice(0, 100),
+      text: (update.message?.text || update.edited_message?.text || "").replace(/login_\S+/g, "login_***").slice(0, 100),
       pre_checkout: !!update.pre_checkout_query,
       successful_payment: !!update.message?.successful_payment,
     }));
