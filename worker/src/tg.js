@@ -282,11 +282,22 @@ export async function handleTgBotWebhook(request, env) {
   const expected = env.TG_WEBHOOK_SECRET;
   if (expected) {
     const provided = request.headers.get("x-telegram-bot-api-secret-token") || "";
-    if (provided !== expected) return json({ ok: false, error: "bad secret" }, 403);
+    if (provided !== expected) {
+      console.log("[wh] bad secret");
+      return json({ ok: false, error: "bad secret" }, 403);
+    }
   }
   let update;
   try { update = await request.json(); }
   catch { return json({ ok: false, error: "bad json" }, 400); }
+  try {
+    console.log("[wh] update:", JSON.stringify({
+      from: update.message?.from?.id || update.edited_message?.from?.id || null,
+      text: (update.message?.text || update.edited_message?.text || "").replace(/login_\S+/g, "login_***").slice(0, 100),
+      pre_checkout: !!update.pre_checkout_query,
+      successful_payment: !!update.message?.successful_payment,
+    }));
+  } catch {}
 
   // 1) Pre-checkout — надо ответить в течение 10 сек, иначе TG отменит оплату.
   if (update.pre_checkout_query) {
@@ -325,11 +336,20 @@ export async function handleTgBotWebhook(request, env) {
   // /start login_<token> — логин на сайт.
   if (payload.startsWith("login_")) {
     const token = payload.slice("login_".length);
-    if (/^[a-zA-Z0-9_-]{8,128}$/.test(token) && env.TIDAL_KV) {
+    const tokenOk = /^[a-zA-Z0-9_-]{8,128}$/.test(token);
+    console.log(`[wh] login_ payload, token len=${token.length}, ok=${tokenOk}, kv=${!!env.TIDAL_KV}`);
+    if (tokenOk && env.TIDAL_KV) {
       const sanitized = sanitizeUser(from);
-      await env.TIDAL_KV.put(`login:${token}`, JSON.stringify(sanitized), {
-        expirationTtl: LOGIN_TTL_SECONDS,
-      });
+      try {
+        await env.TIDAL_KV.put(`login:${token}`, JSON.stringify(sanitized), {
+          expirationTtl: LOGIN_TTL_SECONDS,
+        });
+        console.log(`[wh] login KV put OK token=${token.slice(0, 6)}… user=${sanitized.id}`);
+      } catch (e) {
+        console.log(`[wh] login KV put FAIL: ${e && e.message}`);
+        await tgSendMessage(env, chatId, "Не удалось сохранить вход на сервере. Попробуй ещё раз.");
+        return json({ ok: true });
+      }
       const sub = await readSubscription(env, sanitized.id);
       const line = sub.admin
         ? "🛠 Админ-доступ подтверждён. Возвращайся на сайт — там уже всё."
@@ -337,6 +357,9 @@ export async function handleTgBotWebhook(request, env) {
           ? `✅ Вход подтверждён. Подписка активна до ${new Date(sub.until * 1000).toLocaleDateString("ru-RU")}.`
           : "✅ Вход подтверждён. Возвращайся на сайт — там уже всё.";
       await tgSendMessage(env, chatId, line);
+    } else if (env.TIDAL_KV) {
+      // Токен невалидный — явно скажем.
+      await tgSendMessage(env, chatId, "Некорректная ссылка входа. Попробуй нажать «Войти» на сайте ещё раз.");
     }
     return json({ ok: true });
   }
