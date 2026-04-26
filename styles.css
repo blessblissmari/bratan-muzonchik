@@ -337,6 +337,7 @@ input[type="range"]::-moz-range-thumb {
 
 /* Result tabs */
 .result-tabs { display: flex; gap: 4px; padding: 0 8px 8px; border-bottom: 1px solid var(--border); }
+.result-tabs[hidden] { display: none; }
 .result-tabs .tab {
   background: transparent; border: none; padding: 8px 14px;
   color: var(--muted); border-radius: 8px 8px 0 0;
@@ -350,6 +351,7 @@ input[type="range"]::-moz-range-thumb {
 .set-row .thumb { border-radius: 6px; }
 
 /* Featured pinned track card */
+.featured-card[hidden] { display: none; }
 .featured-card {
   display: grid; grid-template-columns: 120px 1fr; gap: 12px;
   margin: 8px 0 12px; padding: 10px;

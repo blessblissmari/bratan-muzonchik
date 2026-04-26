@@ -1414,7 +1414,14 @@
         const btn = ev.target.closest('.tab');
         if (!btn) return;
         const tab = btn.dataset.tab;
-        if (!tab || tab === state.resultTab) return;
+        if (!tab) return;
+        // Альбомы и плейлисты есть только у SoundCloud — авто-переключаем источник.
+        if ((tab === 'albums' || tab === 'playlists') && state.source !== SOURCES.SC) {
+          state.source = SOURCES.SC;
+          saveSource(state.source);
+          applySourceToUi();
+        }
+        if (tab === state.resultTab) return;
         state.resultTab = tab;
         for (const t of els.resultTabs.querySelectorAll('.tab')) {
           t.classList.toggle('active', t.dataset.tab === tab);
