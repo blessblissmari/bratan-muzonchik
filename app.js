@@ -88,7 +88,8 @@
   // Админы — безлимитный доступ. Должен совпадать со списком в worker/src/tg.js.
   const ADMIN_TG_IDS = new Set([898846950, 422896004]);
   const TG_LOGIN_POLL_INTERVAL_MS = 2000;
-  const TG_LOGIN_POLL_TIMEOUT_MS = 5 * 60 * 1000;
+  const TG_LOGIN_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+  const LS_KEY_TG_PENDING = 'bratan:tg_pending_login:v1';
 
   // ---------- State ----------
   const state = {
@@ -1414,7 +1415,14 @@
         const btn = ev.target.closest('.tab');
         if (!btn) return;
         const tab = btn.dataset.tab;
-        if (!tab || tab === state.resultTab) return;
+        if (!tab) return;
+        // Альбомы и плейлисты есть только у SoundCloud — авто-переключаем источник.
+        if ((tab === 'albums' || tab === 'playlists') && state.source !== SOURCES.SC) {
+          state.source = SOURCES.SC;
+          saveSource(state.source);
+          applySourceToUi();
+        }
+        if (tab === state.resultTab) return;
         state.resultTab = tab;
         for (const t of els.resultTabs.querySelectorAll('.tab')) {
           t.classList.toggle('active', t.dataset.tab === tab);
@@ -1563,9 +1571,28 @@
 
   let tgPollTimer = null;
   let tgPollDeadline = 0;
+  let tgPollToken = null;
+
+  function loadPendingLogin() {
+    try {
+      const raw = localStorage.getItem(LS_KEY_TG_PENDING);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (!obj || !obj.token || !obj.deadline) return null;
+      if (Date.now() > Number(obj.deadline)) return null;
+      return obj;
+    } catch { return null; }
+  }
+  function savePendingLogin(token, deadline) {
+    try { localStorage.setItem(LS_KEY_TG_PENDING, JSON.stringify({ token, deadline })); } catch {}
+  }
+  function clearPendingLogin() {
+    try { localStorage.removeItem(LS_KEY_TG_PENDING); } catch {}
+  }
 
   function stopTgPoll() {
     if (tgPollTimer) { clearTimeout(tgPollTimer); tgPollTimer = null; }
+    tgPollToken = null;
     if (els.tgLoginBtn) els.tgLoginBtn.classList.remove('loading');
   }
 
@@ -1588,28 +1615,49 @@
   }
 
   function schedulePoll(token) {
+    tgPollToken = token;
     if (Date.now() > tgPollDeadline) {
+      clearPendingLogin();
       stopTgPoll();
       setStatus('Время на вход вышло. Нажми «Войти через Telegram» ещё раз.');
       return;
     }
     tgPollTimer = setTimeout(async () => {
       const ok = await pollOnce(token);
-      if (ok) { stopTgPoll(); return; }
+      if (ok) { clearPendingLogin(); stopTgPoll(); return; }
       schedulePoll(token);
     }, TG_LOGIN_POLL_INTERVAL_MS);
+  }
+
+  // На мобилках при возврате из TG браузер может быть убит; резюмируем поллинг.
+  async function resumePendingLogin() {
+    const pending = loadPendingLogin();
+    if (!pending) return;
+    if (loadTgUser()) { clearPendingLogin(); stopTgPoll(); return; }
+    // Сразу бьём один раз — вдруг юзер уже нажал Start.
+    if (await pollOnce(pending.token)) { clearPendingLogin(); stopTgPoll(); return; }
+    // Продолжаем периодический поллинг до истечения deadline.
+    if (tgPollTimer) return;
+    tgPollDeadline = Number(pending.deadline);
+    if (els.tgLoginBtn) els.tgLoginBtn.classList.add('loading');
+    setStatus('Ждём подтверждения в Telegram…');
+    schedulePoll(pending.token);
   }
 
   function startTgLogin() {
     stopTgPoll();
     const token = genLoginToken();
     tgPollDeadline = Date.now() + TG_LOGIN_POLL_TIMEOUT_MS;
+    savePendingLogin(token, tgPollDeadline);
     const url = `https://t.me/${TG_BOT_USERNAME}?start=login_${token}`;
-    // Открываем в новой вкладке (мобилки — в приложении TG) и начинаем пуллить.
-    window.open(url, '_blank', 'noopener,noreferrer');
+    // Открываем в той же вкладке — это надёжнее на мобилках, где popup блокируется
+    // и браузер может убить фоновую вкладку. Токен хранится в localStorage,
+    // поллинг возобновляется на visibilitychange.
     if (els.tgLoginBtn) els.tgLoginBtn.classList.add('loading');
-    setStatus('Ждём подтверждения в Telegram…');
+    setStatus('Открываем Telegram… После Start вернись на эту вкладку.');
     schedulePoll(token);
+    // Требуем user-gesture: location.assign держит локальный state и возвратит в history.
+    window.location.href = url;
   }
 
   async function refreshSubscription() {
@@ -1650,7 +1698,13 @@
     // При возвращении на сайт с активной сессией — подтянуть серверный плейлист + featured.
     if (loadTgSession()) { pullServerPlaylist(); pullServerFeatured(); }
     renderFeatured();
-    window.addEventListener('beforeunload', stopTgPoll);
+    // Если юзер вышел в TG и вернулся — возобновляем опрос сервера.
+    resumePendingLogin();
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) resumePendingLogin();
+    });
+    window.addEventListener('focus', resumePendingLogin);
+    window.addEventListener('pageshow', resumePendingLogin);
   }
 
   // ---------- PWA ----------

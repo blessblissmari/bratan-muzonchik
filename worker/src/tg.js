@@ -110,6 +110,38 @@ async function grantSubscription(env, id, days) {
   return { subscribed: true, until };
 }
 
+async function revokeSubscription(env, id) {
+  if (!env.TIDAL_KV) return false;
+  const nId = Number(id);
+  await env.TIDAL_KV.delete(`sub:${nId}`);
+  return true;
+}
+
+async function listActiveSubs(env, limit = 50) {
+  if (!env.TIDAL_KV) return [];
+  const out = [];
+  const now = Math.floor(Date.now() / 1000);
+  let cursor;
+  for (let i = 0; i < 5; i++) {
+    const page = await env.TIDAL_KV.list({ prefix: "sub:", limit: 1000, cursor });
+    for (const k of page.keys) {
+      const id = Number(k.name.slice("sub:".length));
+      if (!Number.isFinite(id) || id <= 0) continue;
+      const raw = await env.TIDAL_KV.get(k.name);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw);
+        const until = Number(parsed.until || 0);
+        if (until > now) out.push({ id, until });
+      } catch { /* noop */ }
+      if (out.length >= limit) return out;
+    }
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  return out;
+}
+
 // ---------- Telegram Bot API helpers ----------
 
 async function tgCall(env, method, body) {
@@ -377,17 +409,25 @@ export async function handleTgBotWebhook(request, env) {
 
   // /help
   if (/^\/help(@\w+)?(\s|$)/i.test(text)) {
-    await tgSendMessage(
-      env,
-      chatId,
-      [
-        "Команды:",
-        "• /pay — оплатить подписку (99 ⭐ / 30 дней)",
-        "• /status — состояние подписки",
-        "• /playlist — показать свой плейлист с сайта",
-        "• /start — приветствие",
-      ].join("\n"),
-    );
+    const baseLines = [
+      "Команды:",
+      "• /pay — оплатить подписку (99 ⭐ / 30 дней)",
+      "• /status — состояние подписки",
+      "• /playlist — показать свой плейлист с сайта",
+      "• /start — приветствие",
+    ];
+    if (adminCommandsFor(from.id)) {
+      baseLines.push(
+        "",
+        "<b>Админские команды:</b>",
+        "• /grant &lt;tg_id&gt; — выдать подписку навсегда (бесплатно)",
+        "• /grant &lt;tg_id&gt; &lt;дней&gt; — выдать подписку на N дней",
+        "• /unsub &lt;tg_id&gt; — отозвать подписку",
+        "• /subs — список активных подписчиков",
+        "• /refund &lt;charge_id&gt; — возврат звёзд",
+      );
+    }
+    await tgSendMessage(env, chatId, baseLines.join("\n"));
     return json({ ok: true });
   }
 
@@ -403,14 +443,57 @@ export async function handleTgBotWebhook(request, env) {
     return json({ ok: true });
   }
 
-  // /grant <tg_id> <days> — админская команда: выдать подписку вручную.
-  const grantMatch = text.match(/^\/grant(?:@\w+)?\s+(\d+)(?:\s+(\d+))?/i);
+  // /grant <tg_id> [days|forever] — админская команда: выдать подписку вручную.
+  // Без аргумента дней или со словом forever / 0 — выдаём «навсегда» (~100 лет).
+  const grantMatch = text.match(/^\/grant(?:@\w+)?\s+(\d+)(?:\s+(\S+))?/i);
   if (grantMatch && adminCommandsFor(from.id)) {
     const targetId = Number(grantMatch[1]);
-    const days = Math.max(1, Math.min(3650, Number(grantMatch[2] || SUB_PERIOD_DAYS)));
+    const arg = grantMatch[2] ? String(grantMatch[2]).toLowerCase() : "";
+    let days;
+    if (!arg || arg === "forever" || arg === "0" || arg === "навсегда") {
+      days = 36500;
+    } else {
+      const n = Number(arg);
+      days = Number.isFinite(n) && n > 0 ? Math.min(36500, n) : 36500;
+    }
     const { until } = await grantSubscription(env, targetId, days);
-    const untilStr = new Date(until * 1000).toLocaleDateString("ru-RU");
-    await tgSendMessage(env, chatId, `✅ Выдал подписку tg_id=${targetId} до ${untilStr} (+${days}д).`);
+    const untilStr = days >= 36500 ? "навсегда" : `до ${new Date(until * 1000).toLocaleDateString("ru-RU")}`;
+    await tgSendMessage(env, chatId, `✅ Выдал подписку tg_id=<code>${targetId}</code> ${untilStr} (+${days}д). Платить ему не нужно.`);
+    // Уведомляем самого юзера, если бот может ему писать (он жал /start раньше).
+    if (targetId !== Number(from.id)) {
+      await tgSendMessage(env, targetId, `🎁 Тебе выдали безлимитный доступ к «Братан-музончику» ${untilStr}. Открой сайт и войди через Telegram.`).catch?.(() => {});
+    }
+    return json({ ok: true });
+  }
+
+  // /unsub <tg_id> — админская команда: отозвать подписку.
+  const unsubMatch = text.match(/^\/unsub(?:@\w+)?\s+(\d+)/i);
+  if (unsubMatch && adminCommandsFor(from.id)) {
+    const targetId = Number(unsubMatch[1]);
+    if (ADMIN_IDS.has(targetId)) {
+      await tgSendMessage(env, chatId, `Нельзя отозвать у админа.`);
+    } else {
+      await revokeSubscription(env, targetId);
+      await tgSendMessage(env, chatId, `🗑 Подписка tg_id=<code>${targetId}</code> отозвана.`);
+    }
+    return json({ ok: true });
+  }
+
+  // /subs — админская команда: показать всех активных подписчиков.
+  if (/^\/subs(@\w+)?(\s|$)/i.test(text) && adminCommandsFor(from.id)) {
+    const subs = await listActiveSubs(env, 100);
+    if (!subs.length) {
+      await tgSendMessage(env, chatId, "Активных подписчиков нет.");
+    } else {
+      const lines = subs
+        .sort((a, b) => b.until - a.until)
+        .map((s) => {
+          const date = new Date(s.until * 1000).toLocaleDateString("ru-RU");
+          const forever = s.until - Math.floor(Date.now() / 1000) > 365 * 24 * 60 * 60 * 50 ? " (навсегда)" : "";
+          return `• <code>${s.id}</code> — до ${date}${forever}`;
+        });
+      await tgSendMessage(env, chatId, `Активных: ${subs.length}\n${lines.join("\n")}`);
+    }
     return json({ ok: true });
   }
 
