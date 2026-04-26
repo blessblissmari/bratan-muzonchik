@@ -344,9 +344,11 @@ export async function handleTgBotWebhook(request, env) {
         await env.TIDAL_KV.put(`login:${token}`, JSON.stringify(sanitized), {
           expirationTtl: LOGIN_TTL_SECONDS,
         });
-        console.log(`[wh] login KV put OK token=${token} user=${sanitized.id}`);
+        console.log(`[wh] login KV put OK token=${token.slice(0, 6)}… user=${sanitized.id}`);
       } catch (e) {
         console.log(`[wh] login KV put FAIL: ${e && e.message}`);
+        await tgSendMessage(env, chatId, "Не удалось сохранить вход на сервере. Попробуй ещё раз.");
+        return json({ ok: true });
       }
       const sub = await readSubscription(env, sanitized.id);
       const line = sub.admin
